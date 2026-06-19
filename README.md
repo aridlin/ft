@@ -59,13 +59,13 @@ Forced modes do not fallback. Auto mode tries its best fallback path if the firs
 Linux:
 
 ```bash
-c++ examples/combined_smoke.cpp -o combined_smoke -std=c++17 $(pkg-config --cflags --libs cairo x11) -pthread
+c++ examples/ft_combined_smoke.cpp -o build/ft_combined_smoke -std=c++17 $(pkg-config --cflags --libs cairo x11) -pthread
 ```
 
 Windows with MSVC:
 
 ```bat
-cl /std:c++17 examples\combined_smoke.cpp d2d1.lib dwrite.lib gdi32.lib ole32.lib uuid.lib user32.lib windowscodecs.lib ws2_32.lib
+cl /std:c++17 examples\ft_combined_smoke.cpp d2d1.lib dwrite.lib gdi32.lib ole32.lib uuid.lib user32.lib windowscodecs.lib ws2_32.lib
 ```
 
 ## Screenshots

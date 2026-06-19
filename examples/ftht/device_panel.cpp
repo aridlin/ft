@@ -49,18 +49,18 @@ static void metric_card(const char* title, const char* value, const char* unit, 
     std::snprintf(html, sizeof(html),
         "<section class=\"metric\"><div>%s</div><b>%s<span>%s</span></b><small>%s</small></section>",
         title, value, unit, note);
-    ftht::html(html);
+    ft::html(html);
 }
 
-int main() {
-    ftht::Config cfg;
+int main(int argc, char** argv) {
+    ft::Config cfg;
     cfg.title = "Grow Rack Controller";
-    cfg.port = 8080;
-    cfg.client_poll_ms = 1500;
+    cfg.web_port = 8080;
+    cfg.web_client_poll_ms = 1500;
 #ifdef FTHT_DEMO_CLIENT_DEBUG
     cfg.client_debug_output = true;
 #endif
-    cfg.extra_head_html =
+    cfg.web_extra_head_html =
         "<style>"
         ".metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}"
         ".metric{border:2px solid var(--border);padding:10px;background:var(--paper2);box-shadow:3px 3px 0 var(--border)}"
@@ -72,7 +72,7 @@ int main() {
         "@media(max-width:820px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}"
         "</style>";
 
-    if (!ftht::create_server(cfg)) return 1;
+    if (!ft::create_window(cfg, argc, argv)) return 1;
 
     char device_name[48] = "rack-a";
     char location[64] = "utility room";
@@ -97,7 +97,7 @@ int main() {
     static const char* tabs[] = { "Status", "Controls", "Events" };
     static const char* modes[] = { "Manual", "Auto", "Night" };
 
-    while (ftht::pump()) {
+    while (ft::pump()) {
         ++tick;
 
         float wave = std::sin(tick * 0.37f);
@@ -120,14 +120,15 @@ int main() {
             fan = false;
         }
 
-        ftht::begin();
+        ft::begin();
+        ft::webserver_button();
 
-        ftht::text_wrapped(
+        ft::text_wrapped(
             "A practical FTHT panel: live telemetry, persistent controls, operator notes, "
             "and event history over the same immediate-mode C++ loop.");
-        ftht::separator();
-        ftht::tabs(tabs, 3, &tab);
-        ftht::separator();
+        ft::separator();
+        ft::tabs(tabs, 3, &tab);
+        ft::separator();
 
         if (tab == 0) {
             char temp_buf[32], hum_buf[32], moist_buf[32], power_buf[32], summary[256];
@@ -136,57 +137,57 @@ int main() {
             std::snprintf(moist_buf, sizeof(moist_buf), "%.0f", moisture);
             std::snprintf(power_buf, sizeof(power_buf), "%.1f", power);
 
-            ftht::html("<div class=\"metrics\">");
+            ft::html("<div class=\"metrics\">");
             metric_card("Air temp", temp_buf, "C", temp > target_temp + 2.0f ? "above target" : "stable");
             metric_card("Humidity", hum_buf, "%", humidity < 48.0f ? "dry air" : "in range");
             metric_card("Soil", moist_buf, "%", moisture < min_moisture ? "needs water" : "ok");
             metric_card("Power", power_buf, "W", "estimated load");
-            ftht::html("</div>");
+            ft::html("</div>");
 
-            ftht::separator();
+            ft::separator();
             std::snprintf(summary, sizeof(summary),
                           "Mode: %s | lights: %s | pump: %s | fan: %s | alarm: %s | sample: %d",
                           modes[mode], lights ? "on" : "off", pump ? "on" : "off",
                           fan ? "on" : "off", alarm_armed ? "armed" : "off", tick);
-            ftht::text(summary);
+            ft::text(summary);
 
-            if (ftht::button("Refresh now", ftht::ColorRole::Accent)) {
+            if (ft::button("Refresh now", ft::ColorRole::Accent)) {
                 append_event(log, sizeof(log), "manual", "operator requested a telemetry refresh");
             }
         } else if (tab == 1) {
-            ftht::row({1.0f, 1.0f}, [&]() {
-                ftht::input("Device name", device_name, sizeof(device_name));
-                ftht::input("Location", location, sizeof(location));
+            ft::row({1.0f, 1.0f}, [&]() {
+                ft::input("Device name", device_name, sizeof(device_name));
+                ft::input("Location", location, sizeof(location));
             });
 
-            ftht::row({1.0f, 1.0f, 1.0f}, [&]() {
-                ftht::dropdown("Mode", modes, 3, &mode, 3);
-                ftht::checkbox("Lights relay", &lights);
-                ftht::checkbox("Pump relay", &pump);
+            ft::row({1.0f, 1.0f, 1.0f}, [&]() {
+                ft::dropdown("Mode", modes, 3, &mode, 3);
+                ft::checkbox("Lights relay", &lights);
+                ft::checkbox("Pump relay", &pump);
             });
 
-            ftht::row({1.0f, 1.0f, 1.0f}, [&]() {
-                ftht::checkbox("Fan relay", &fan);
-                ftht::checkbox("Alarm armed", &alarm_armed);
-                ftht::slider_float("Light hours", &light_hours, 0.0f, 24.0f);
+            ft::row({1.0f, 1.0f, 1.0f}, [&]() {
+                ft::checkbox("Fan relay", &fan);
+                ft::checkbox("Alarm armed", &alarm_armed);
+                ft::slider_float("Light hours", &light_hours, 0.0f, 24.0f);
             });
 
-            ftht::row({1.0f, 1.0f}, [&]() {
-                ftht::slider_float("Target temp C", &target_temp, 16.0f, 32.0f);
-                ftht::slider_float("Min soil %", &min_moisture, 10.0f, 80.0f);
+            ft::row({1.0f, 1.0f}, [&]() {
+                ft::slider_float("Target temp C", &target_temp, 16.0f, 32.0f);
+                ft::slider_float("Min soil %", &min_moisture, 10.0f, 80.0f);
             });
 
-            ftht::text_area_ex("Operator notes", notes, sizeof(notes), 6, ftht::TextAreaFlags::WordWrap);
+            ft::text_area_ex("Operator notes", notes, sizeof(notes), 6, ft::TextAreaFlags::WordWrap);
 
-            ftht::row(3, [&]() {
-                if (ftht::button("Apply settings", ftht::ColorRole::Success)) {
+            ft::row(3, [&]() {
+                if (ft::button("Apply settings", ft::ColorRole::Success)) {
                     append_event(log, sizeof(log), "config", "settings applied");
                 }
-                if (ftht::button("Prime pump", ftht::ColorRole::Accent)) {
+                if (ft::button("Prime pump", ft::ColorRole::Accent)) {
                     pump = true;
                     append_event(log, sizeof(log), "manual", "pump primed");
                 }
-                if (ftht::button("Emergency stop", ftht::ColorRole::Warning)) {
+                if (ft::button("Emergency stop", ft::ColorRole::Warning)) {
                     lights = false;
                     pump = false;
                     fan = false;
@@ -195,21 +196,21 @@ int main() {
                 }
             });
         } else {
-            ftht::log_view("Event log", log, 16,
-                           ftht::LogViewFlags::WordWrap | ftht::LogViewFlags::AutoScrollBottom);
-            ftht::row(2, [&]() {
-                if (ftht::button("Add inspection note")) {
+            ft::log_view("Event log", log, 16,
+                           ft::LogViewFlags::WordWrap | ft::LogViewFlags::AutoScrollBottom);
+            ft::row(2, [&]() {
+                if (ft::button("Add inspection note")) {
                     append_event(log, sizeof(log), "note", "visual inspection completed");
                 }
-                if (ftht::button("Clear log", ftht::ColorRole::Warning)) {
+                if (ft::button("Clear log", ft::ColorRole::Warning)) {
                     copy_text(log, sizeof(log), "[log]     cleared by operator");
                 }
             });
         }
 
-        ftht::end();
+        ft::end();
     }
 
-    ftht::shutdown();
+    ft::shutdown();
     return 0;
 }

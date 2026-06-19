@@ -21,12 +21,12 @@ static void append_line(char* buffer, int cap, const char* line) {
     }
 }
 
-int main() {
-    ftht::Config cfg;
+int main(int argc, char** argv) {
+    ft::Config cfg;
     cfg.title = "FTHT Showcase";
-    cfg.port = 8080;
+    cfg.web_port = 8080;
 
-    if (!ftht::create_server(cfg)) return 1;
+    if (!ft::create_window(cfg, argc, argv)) return 1;
 
     char username[64] = "operator";
     char port[16] = "8080";
@@ -45,71 +45,72 @@ int main() {
     static const char* tabs[] = { "Controls", "Logs" };
     static const char* envs[] = { "Local", "Staging", "Production" };
 
-    while (ftht::pump()) {
-        ftht::begin();
+    while (ft::pump()) {
+        ft::begin();
+        ft::webserver_button();
 
-        ftht::text_wrapped(
+        ft::text_wrapped(
             "FTHT keeps a tiny immediate-mode loop, but renders HTML and serves it over HTTP. "
             "It is intended for small control panels on PCs, ESP32 boards, and similar devices.");
-        ftht::separator();
+        ft::separator();
 
-        ftht::tabs(tabs, 2, &tab_sel);
-        ftht::separator();
+        ft::tabs(tabs, 2, &tab_sel);
+        ft::separator();
 
         if (tab_sel == 0) {
-            ftht::row({2.0f, 1.0f}, [&]() {
-                if (ftht::input("Username", username, sizeof(username))) {
+            ft::row({2.0f, 1.0f}, [&]() {
+                if (ft::input("Username", username, sizeof(username))) {
                     append_line(logs, sizeof(logs), "[form] username changed");
                 }
-                ftht::input("Port", port, sizeof(port), ftht::InputFlags::CharsDecimal);
+                ft::input("Port", port, sizeof(port), ft::InputFlags::CharsDecimal);
             });
 
-            ftht::row({1.0f, 1.0f, 1.0f}, [&]() {
-                ftht::dropdown("Environment", envs, 3, &env_sel, 3);
-                ftht::checkbox("Safe mode", &safe_mode);
-                ftht::slider_float("Blend", &blend, 0.0f, 1.0f);
+            ft::row({1.0f, 1.0f, 1.0f}, [&]() {
+                ft::dropdown("Environment", envs, 3, &env_sel, 3);
+                ft::checkbox("Safe mode", &safe_mode);
+                ft::slider_float("Blend", &blend, 0.0f, 1.0f);
             });
 
-            ftht::text_area_ex("Notes", notes, sizeof(notes), 7, ftht::TextAreaFlags::WordWrap);
+            ft::text_area_ex("Notes", notes, sizeof(notes), 7, ft::TextAreaFlags::WordWrap);
 
-            ftht::row(3, [&]() {
-                if (ftht::button("Ping", ftht::ColorRole::Accent)) {
+            ft::row(3, [&]() {
+                if (ft::button("Ping", ft::ColorRole::Accent)) {
                     append_line(logs, sizeof(logs), "[action] ping clicked");
-                    ftht::toast_success("Ping sent");
+                    ft::toast_success("Ping sent");
                 }
-                if (ftht::button("Warn", ftht::ColorRole::Warning)) {
+                if (ft::button("Warn", ft::ColorRole::Warning)) {
                     append_line(logs, sizeof(logs), "[action] warning clicked");
-                    ftht::toast_warning("Warning toast queued");
+                    ft::toast_warning("Warning toast queued");
                 }
-                if (ftht::button("Open modal")) {
-                    ftht::open_modal("Confirm action");
-                    ftht::toast("Modal opened");
+                if (ft::button("Open modal")) {
+                    ft::open_modal("Confirm action");
+                    ft::toast("Modal opened");
                 }
             });
         } else {
-            ftht::log_view("Output", logs, 12,
-                           ftht::LogViewFlags::WordWrap | ftht::LogViewFlags::AutoScrollBottom);
-            if (ftht::button("Append sample")) {
+            ft::log_view("Output", logs, 12,
+                           ft::LogViewFlags::WordWrap | ft::LogViewFlags::AutoScrollBottom);
+            if (ft::button("Append sample")) {
                 append_line(logs, sizeof(logs), "[log] sample line appended");
             }
         }
 
-        if (ftht::modal("Confirm action", [&]() {
-                ftht::text_wrapped("This modal is still just immediate-mode C++ rendered into HTML.");
-                ftht::row(2, [&]() {
-                    if (ftht::button("Cancel")) ftht::close_modal();
-                    if (ftht::button("Confirm", ftht::ColorRole::Success)) {
+        if (ft::modal("Confirm action", [&]() {
+                ft::text_wrapped("This modal is still just immediate-mode C++ rendered into HTML.");
+                ft::row(2, [&]() {
+                    if (ft::button("Cancel")) ft::close_modal();
+                    if (ft::button("Confirm", ft::ColorRole::Success)) {
                         append_line(logs, sizeof(logs), "[modal] action confirmed");
-                        ftht::toast_success("Action confirmed");
-                        ftht::close_modal();
+                        ft::toast_success("Action confirmed");
+                        ft::close_modal();
                     }
                 });
             })) {
         }
 
-        ftht::end();
+        ft::end();
     }
 
-    ftht::shutdown();
+    ft::shutdown();
     return 0;
 }

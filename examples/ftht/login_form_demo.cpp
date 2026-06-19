@@ -38,18 +38,18 @@ static void append_event(char* log, int cap, const char* message) {
     append_line(log, cap, line);
 }
 
-int main() {
-    ftht::Config cfg;
+int main(int argc, char** argv) {
+    ft::Config cfg;
     cfg.title = "FTHT Form Login Demo";
-    cfg.port = 8081;
-    cfg.login_mode = ftht::LoginMode::Form;
-    cfg.login_username = "admin";
-    cfg.login_password = "secret";
-    cfg.login_db_path = "ftht_form_login_demo.litesql";
-    cfg.login_session_seconds = 10 * 60;
-    cfg.login_allow_registration = true;
+    cfg.web_port = 8081;
+    cfg.web_login_mode = ft::LoginMode::Form;
+    cfg.web_login_username = "admin";
+    cfg.web_login_password = "secret";
+    cfg.web_login_db_path = "ftht_form_login_demo.litesql";
+    cfg.web_login_session_seconds = 10 * 60;
+    cfg.web_login_allow_registration = true;
 
-    if (!ftht::create_server(cfg)) return 1;
+    if (!ft::create_window(cfg, argc, argv)) return 1;
 
     bool relay = false;
     float threshold = 42.0f;
@@ -59,39 +59,40 @@ int main() {
         "[auth] registration requests require terminal approval\n"
         "[auth] idle sessions expire after 10 minutes";
 
-    while (ftht::pump()) {
-        ftht::begin();
+    while (ft::pump()) {
+        ft::begin();
+        ft::webserver_button();
 
-        ftht::text_wrapped(
+        ft::text_wrapped(
             "This panel is protected by the built-in form login. The first run writes a LiteSQL "
             "text file containing username, salt, and salted password hash.");
-        ftht::separator();
+        ft::separator();
 
-        ftht::row({1.0f, 1.0f}, [&]() {
-            if (ftht::checkbox("Relay armed", &relay)) {
+        ft::row({1.0f, 1.0f}, [&]() {
+            if (ft::checkbox("Relay armed", &relay)) {
                 append_event(log, sizeof(log), relay ? "relay armed" : "relay disarmed");
             }
-            if (ftht::slider_float("Alert threshold", &threshold, 0.0f, 100.0f)) {
+            if (ft::slider_float("Alert threshold", &threshold, 0.0f, 100.0f)) {
                 append_event(log, sizeof(log), "threshold changed");
             }
         });
 
-        ftht::text_area_ex("Operator note", operator_note, sizeof(operator_note), 4,
-                           ftht::TextAreaFlags::WordWrap);
+        ft::text_area_ex("Operator note", operator_note, sizeof(operator_note), 4,
+                           ft::TextAreaFlags::WordWrap);
 
-        ftht::row(2, [&]() {
-            if (ftht::button("Record check", ftht::ColorRole::Success)) {
+        ft::row(2, [&]() {
+            if (ft::button("Record check", ft::ColorRole::Success)) {
                 append_event(log, sizeof(log), "manual check recorded");
             }
-            ftht::html("<button type=\"button\" onclick=\"location.href='/ftht/logout'\">Logout</button>");
+            ft::html("<button type=\"button\" onclick=\"location.href='/ftht/logout'\">Logout</button>");
         });
 
-        ftht::log_view("Audit log", log, 10,
-                       ftht::LogViewFlags::WordWrap | ftht::LogViewFlags::AutoScrollBottom);
+        ft::log_view("Audit log", log, 10,
+                       ft::LogViewFlags::WordWrap | ft::LogViewFlags::AutoScrollBottom);
 
-        ftht::end();
+        ft::end();
     }
 
-    ftht::shutdown();
+    ft::shutdown();
     return 0;
 }

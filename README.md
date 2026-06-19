@@ -54,6 +54,23 @@ Command-line flags override `cfg.mode`:
 
 Forced modes do not fallback. Auto mode tries its best fallback path if the first backend cannot open.
 
+## GUI To Web Handoff
+
+Apps launched through `ft::create_window()` can expose the same immediate-mode UI over HTTP while keeping a tiny local control window:
+
+```cpp
+ft::webserver_button();
+```
+
+When clicked from GUI mode, FT starts the FTHT server using the `web_*` fields from `ft::Config`, shrinks the native window to a small stop-control view, and serves browser requests through the same `ft::` widget calls. The stop-control window only shows the server URL and a stop button.
+
+If the app does not include `ft::webserver_button()`, the built-in command line can do the same thing:
+
+- `:webserver`
+- `:web`
+- `:server`
+- `:ws`
+
 ## Build
 
 Linux:
@@ -80,6 +97,8 @@ Bundled demos:
 - `examples/ftht/login_form_demo.cpp`
 - `examples/ftht/login_draw_demo.cpp`
 - `examples/ftht/compile_overwatch.cpp`
+
+The FTHT demos are intentionally written against `ft::`, not direct `ftht::`, so opening the built executables normally on a desktop starts the FTUI GUI. Use `--ft-web` when you want the same demo to launch directly as an embedded web panel.
 
 Windows with MSVC:
 

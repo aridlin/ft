@@ -38,14 +38,14 @@ static void append_event(char* log, int cap, const char* message) {
     append_line(log, cap, line);
 }
 
-int main() {
-    ftht::Config cfg;
+int main(int argc, char** argv) {
+    ft::Config cfg;
     cfg.title = "FTHT Draw Login Demo";
-    cfg.port = 8082;
-    cfg.login_mode = ftht::LoginMode::DrawPenis;
-    cfg.login_session_seconds = 10 * 60;
+    cfg.web_port = 8082;
+    cfg.web_login_mode = ft::LoginMode::DrawPenis;
+    cfg.web_login_session_seconds = 10 * 60;
 
-    if (!ftht::create_server(cfg)) return 1;
+    if (!ft::create_window(cfg, argc, argv)) return 1;
 
     bool sprinkler = false;
     bool lights = true;
@@ -54,39 +54,40 @@ int main() {
         "[boot] drawing challenge enabled\n"
         "[auth] draw two nearby ellipses and one long ellipse or rectangle";
 
-    while (ftht::pump()) {
-        ftht::begin();
+    while (ft::pump()) {
+        ft::begin();
+        ft::webserver_button();
 
-        ftht::text_wrapped(
+        ft::text_wrapped(
             "This panel is protected by the drawing challenge. It unlocks when the sketch contains "
             "two nearby ellipses and one long ellipse or rectangle.");
-        ftht::separator();
+        ft::separator();
 
-        ftht::row(3, [&]() {
-            if (ftht::checkbox("Sprinkler", &sprinkler)) {
+        ft::row(3, [&]() {
+            if (ft::checkbox("Sprinkler", &sprinkler)) {
                 append_event(log, sizeof(log), sprinkler ? "sprinkler enabled" : "sprinkler disabled");
             }
-            if (ftht::checkbox("Lights", &lights)) {
+            if (ft::checkbox("Lights", &lights)) {
                 append_event(log, sizeof(log), lights ? "lights enabled" : "lights disabled");
             }
-            if (ftht::slider_float("Silliness", &silliness, 0.0f, 100.0f)) {
+            if (ft::slider_float("Silliness", &silliness, 0.0f, 100.0f)) {
                 append_event(log, sizeof(log), "silliness adjusted");
             }
         });
 
-        ftht::row(2, [&]() {
-            if (ftht::button("Log victory", ftht::ColorRole::Accent)) {
+        ft::row(2, [&]() {
+            if (ft::button("Log victory", ft::ColorRole::Accent)) {
                 append_event(log, sizeof(log), "challenge accepted by the operator");
             }
-            ftht::html("<button type=\"button\" onclick=\"location.href='/ftht/logout'\">Logout</button>");
+            ft::html("<button type=\"button\" onclick=\"location.href='/ftht/logout'\">Logout</button>");
         });
 
-        ftht::log_view("Event log", log, 10,
-                       ftht::LogViewFlags::WordWrap | ftht::LogViewFlags::AutoScrollBottom);
+        ft::log_view("Event log", log, 10,
+                       ft::LogViewFlags::WordWrap | ft::LogViewFlags::AutoScrollBottom);
 
-        ftht::end();
+        ft::end();
     }
 
-    ftht::shutdown();
+    ft::shutdown();
     return 0;
 }

@@ -270,7 +270,7 @@ static void compiler_output_view(const char* label, const std::string& value,
     html += " style=\"max-height:" + std::to_string(height) + "px\">";
     html += highlight_compiler_output(value);
     html += "</pre></label>";
-    ftht::html(html.c_str());
+    ft::html(html.c_str());
 }
 
 static std::string format_duration(long long seconds) {
@@ -446,7 +446,7 @@ static void metric_card(const char* id, const char* title, const std::string& va
         "<b>" + html_escape(value) + "</b>"
         "<small>" + html_escape(note) + "</small>"
         "</section>";
-    ftht::html(html.c_str());
+    ft::html(html.c_str());
 }
 
 static void usage() {
@@ -488,6 +488,10 @@ static Options parse_options(int argc, char** argv) {
         if (arg == "--") {
             opts.command = join_args(argc, argv, i + 1);
             break;
+        } else if (arg == "--ft-auto" || arg == "--ft-gui" || arg == "--gui" ||
+                   arg == "--ft-tui" || arg == "--tui" || arg == "--ft-web" ||
+                   arg == "--web" || arg.rfind("--ft-mode=", 0) == 0) {
+            continue;
         } else if (arg == "--help" || arg == "-h") {
             usage();
             std::exit(0);
@@ -528,13 +532,13 @@ static Options parse_options(int argc, char** argv) {
 int main(int argc, char** argv) {
     Options opts = parse_options(argc, argv);
 
-    ftht::Config cfg;
+    ft::Config cfg;
     cfg.title = opts.title.c_str();
-    cfg.host = opts.host.c_str();
-    cfg.port = opts.port;
-    cfg.client_poll_ms = 0;
-    cfg.auto_submit = false;
-    cfg.dark_mode = true;
+    cfg.web_host = opts.host.c_str();
+    cfg.web_port = opts.port;
+    cfg.web_client_poll_ms = 0;
+    cfg.web_auto_submit = false;
+    cfg.web_dark_mode = true;
     std::string extra_head =
         "<style>"
         ".ow-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}"
@@ -567,9 +571,9 @@ int main(int argc, char** argv) {
         ";function replaceOuter(id,doc){const cur=document.getElementById(id);const next=doc.getElementById(id);if(cur&&next&&cur.outerHTML!==next.outerHTML)cur.outerHTML=next.outerHTML}"
         "async function tick(){try{const out=document.getElementById('ow-output');if(!out)return;const follow=document.getElementById('ow-follow');const wasBottom=(out.scrollHeight-out.scrollTop-out.clientHeight)<32;const oldTop=out.scrollTop;const res=await fetch(location.pathname+'?ow_fragment=1&ow_t='+Date.now(),{cache:'no-store'});const text=await res.text();const doc=new DOMParser().parseFromString(text,'text/html');['ow-state','ow-elapsed','ow-estimate','ow-size','ow-progress'].forEach(id=>replaceOuter(id,doc));const next=doc.getElementById('ow-output');if(!next)return;const html=next.innerHTML;if(html!==out.innerHTML){out.innerHTML=html;if(follow&&follow.checked&&wasBottom)out.scrollTop=out.scrollHeight;else out.scrollTop=oldTop}}catch(e){}}"
         "setTimeout(()=>{const out=document.getElementById('ow-output');if(out)out.scrollTop=out.scrollHeight},0);setInterval(tick,pollMs)});</script>";
-    cfg.extra_head_html = extra_head.c_str();
+    cfg.web_extra_head_html = extra_head.c_str();
 
-    if (!ftht::create_server(cfg)) return 1;
+    if (!ft::create_window(cfg, argc, argv)) return 1;
 
     SharedState state;
     if (!opts.command.empty()) {
@@ -584,7 +588,7 @@ int main(int argc, char** argv) {
     float estimate_minutes = (float)std::max(0.0, opts.estimate_minutes);
 
     const Clock::time_point panel_started = Clock::now();
-    while (ftht::pump()) {
+    while (ft::pump()) {
         Clock::time_point started = state.command_started ? state.started_at : panel_started;
         long long elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - started).count();
 
@@ -636,26 +640,27 @@ int main(int argc, char** argv) {
         int output_lines = count_lines(visible_output);
         int output_kb = (int)((visible_output.size() + 1023) / 1024);
 
-        ftht::begin();
+        ft::begin();
+        ft::webserver_button();
 
-        ftht::html("<div class=\"ow-grid\">");
+        ft::html("<div class=\"ow-grid\">");
         metric_card("ow-state", "State", state_text, status_note, state_class);
         metric_card("ow-elapsed", "Elapsed", format_duration(elapsed_s), command_mode ? "command timer" : "panel timer");
         metric_card("ow-estimate", "Estimate", show_estimate ? format_duration((long long)estimate_s) : "off",
                     show_estimate ? ("remaining " + format_duration(remaining_s)) : "optional timer");
         metric_card("ow-size", "Output", std::to_string(output_lines) + " lines",
                     std::to_string(output_kb) + " KB visible");
-        ftht::html("</div>");
+        ft::html("</div>");
 
         if (show_estimate && estimate_s > 0.0) {
             char progress_html[256];
             std::snprintf(progress_html, sizeof(progress_html),
                           "<div id=\"ow-progress\" class=\"ow-progress\" title=\"%.0f%%\"><i style=\"width:%.1f%%\"></i></div>",
                           progress * 100.0, progress * 100.0);
-            ftht::html(progress_html);
+            ft::html(progress_html);
         }
 
-        ftht::html(
+        ft::html(
             "<div class=\"ow-toolbar\">"
             "<label><input id=\"ow-follow\" type=\"checkbox\" checked>Follow latest output</label>"
             "<span class=\"ow-note\">No word wrap. Use horizontal scroll for long compiler lines.</span>"
@@ -667,10 +672,10 @@ int main(int argc, char** argv) {
         probe += opts.process_pattern.empty() ? "(not configured)\n" : process_output;
         probe += "\nProbe command:\n";
         probe += opts.probe_command.empty() ? "(not configured)\n" : probe_output;
-        ftht::html("<details><summary>Probe / Status</summary>");
-        ftht::log_view("Watch probe", probe.c_str(), 18,
-                       ftht::LogViewFlags::WordWrap | ftht::LogViewFlags::AutoScrollBottom);
-        ftht::html("</details>");
+        ft::html("<details><summary>Probe / Status</summary>");
+        ft::log_view("Watch probe", probe.c_str(), 18,
+                       ft::LogViewFlags::WordWrap | ft::LogViewFlags::AutoScrollBottom);
+        ft::html("</details>");
 
         std::ostringstream info;
         info << "Bind: " << opts.host << ":" << opts.port << "\n";
@@ -684,15 +689,15 @@ int main(int argc, char** argv) {
         info << "  compile_overwatch --estimate-minutes 20 -- make -j8\n\n";
         info << "Passive watch example:\n";
         info << "  compile_overwatch --log build.log --process 'make -j8'\n";
-        ftht::html("<details><summary>Panel Configuration</summary>");
-        ftht::log_view("Panel configuration", info.str().c_str(), 14, ftht::LogViewFlags::WordWrap);
-        ftht::html("</details>");
+        ft::html("<details><summary>Panel Configuration</summary>");
+        ft::log_view("Panel configuration", info.str().c_str(), 14, ft::LogViewFlags::WordWrap);
+        ft::html("</details>");
 
-        ftht::end();
+        ft::end();
     }
 
     state.stop_monitor = true;
     if (monitor.joinable()) monitor.join();
-    ftht::shutdown();
+    ft::shutdown();
     return 0;
 }

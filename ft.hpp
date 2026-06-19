@@ -199,8 +199,11 @@ void set_backdrop_effect(BackdropEffect effect);
 void set_dither_size(int px);
 void set_window_transparency(WindowTransparency mode);
 void set_window_opacity(float opacity);
+void set_window_size(int width, int height);
 void set_window_icon(void* native_icon);
 void set_window_icon_builtin(BuiltinIcon variant = BuiltinIcon::Symbol);
+using CommandHandler = bool (*)(const char* command);
+void set_command_handler(CommandHandler handler);
 
 void text(const char* label);
 void text_wrapped(const char* text);
@@ -685,6 +688,7 @@ static int        g_frame_limit_fps = 60;
 static bool       g_redraw_requested = true;
 static bool       g_shortcuts_enabled = true;
 static CmdState   g_cmd;
+static CommandHandler g_command_handler = nullptr;
 static float      g_dt = 1.0f / 60.0f;
 static bool       g_effects_enabled = false;
 static BackdropEffect g_backdrop_effect = BackdropEffect::Blur;
@@ -1666,6 +1670,11 @@ static bool parse_cmd_int(const char* prefix, int* out) {
 
 static bool apply_cmd_action() {
     if (!g_cmd.buf[0]) return false;
+    if (g_command_handler && g_command_handler(g_cmd.buf)) {
+        g_redraw_requested = true;
+        wake_event_loop();
+        return true;
+    }
 
     const std::string before_theme = g_style_name;
     apply_cmd_theme();
@@ -2243,6 +2252,7 @@ void set_window_opacity(float opacity) {
     internal::wake_event_loop();
 }
 void request_redraw() { internal::g_redraw_requested = true; internal::wake_event_loop(); }
+void set_command_handler(CommandHandler handler) { internal::g_command_handler = handler; }
 void set_style(const Style& s)  {
     internal::g_style = s;
     internal::g_style_name = style_name(s);
@@ -3190,6 +3200,22 @@ bool create_window(const Config& cfg) {
     ShowWindow(g_platform.hwnd,SW_SHOW); UpdateWindow(g_platform.hwnd);
     QueryPerformanceFrequency(&g_freq); QueryPerformanceCounter(&g_last_time);
     return true;
+}
+
+void set_window_size(int width, int height) {
+    using namespace internal;
+    if (!g_platform.hwnd || width <= 0 || height <= 0) return;
+    DWORD style = (DWORD)GetWindowLongPtrW(g_platform.hwnd, GWL_STYLE);
+    DWORD ex_style = (DWORD)GetWindowLongPtrW(g_platform.hwnd, GWL_EXSTYLE);
+    RECT rc = {0, 0, (LONG)(width * g_renderer.dpi_scale + 0.5f), (LONG)(height * g_renderer.dpi_scale + 0.5f)};
+    UINT dpi = (UINT)(g_renderer.dpi_scale * 96.0f + 0.5f);
+    using AdjFn = BOOL(WINAPI*)(LPRECT, DWORD, BOOL, DWORD, UINT);
+    auto adj = (AdjFn)GetProcAddress(GetModuleHandleW(L"user32.dll"), "AdjustWindowRectExForDpi");
+    if (adj) adj(&rc, style, FALSE, ex_style, dpi);
+    else AdjustWindowRectEx(&rc, style, FALSE, ex_style);
+    SetWindowPos(g_platform.hwnd, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top,
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    g_redraw_requested = true;
 }
 
 bool pump() {
@@ -4167,6 +4193,15 @@ bool create_window(const Config& cfg) {
     sync_native_window_transparency();
     clock_gettime(CLOCK_MONOTONIC,&g_last_time);
     return true;
+}
+
+void set_window_size(int width, int height) {
+    using namespace internal;
+    if (!g_platform.display || !g_platform.window || width <= 0 || height <= 0) return;
+    XResizeWindow(g_platform.display, g_platform.window, (unsigned)width, (unsigned)height);
+    XFlush(g_platform.display);
+    g_redraw_requested = true;
+    wake_event_loop();
 }
 
 bool pump() {
@@ -11887,6 +11922,7 @@ using InputFlags = ftui::InputFlags;
 using TextAreaFlags = ftui::TextAreaFlags;
 using LogViewFlags = ftui::LogViewFlags;
 using ToastType = ftui::ToastType;
+using LoginMode = ftht::LoginMode;
 using FileFilter = ftui::FileFilter;
 using DebugState = ftui::DebugState;
 
@@ -11944,7 +11980,7 @@ struct Config {
     bool        web_dark_mode = false;
     bool        web_respect_browser_dark_mode = false;
     const char* web_extra_head_html = nullptr;
-    ftht::LoginMode web_login_mode = ftht::LoginMode::None;
+    LoginMode   web_login_mode = LoginMode::None;
     const char* web_login_username = "admin";
     const char* web_login_password = nullptr;
     const char* web_login_salt = "ftht-login";
@@ -11981,8 +12017,25 @@ struct ImageHandle {
 
 namespace detail {
 
+enum class FrameTarget {
+    Normal,
+    GuiWebControl,
+    TuiWebControl,
+    WebMirror,
+};
+
 inline Mode& active_mode_ref() {
     static Mode value = Mode::Auto;
+    return value;
+}
+
+inline FrameTarget& frame_target_ref() {
+    static FrameTarget value = FrameTarget::Normal;
+    return value;
+}
+
+inline bool& webserver_active_ref() {
+    static bool value = false;
     return value;
 }
 
@@ -11999,6 +12052,17 @@ inline Style& style_ref() {
 inline DebugState& fallback_debug_ref() {
     static DebugState value;
     return value;
+}
+
+inline bool user_widgets_suppressed() {
+    FrameTarget target = frame_target_ref();
+    return target == FrameTarget::GuiWebControl || target == FrameTarget::TuiWebControl;
+}
+
+inline Mode render_mode() {
+    if (user_widgets_suppressed()) return Mode::Auto;
+    if (frame_target_ref() == FrameTarget::WebMirror) return Mode::Web;
+    return active_mode_ref();
 }
 
 inline bool has_display() {
@@ -12260,9 +12324,57 @@ inline ftht::Config to_web_config(const Config& cfg) {
     return out;
 }
 
+inline bool start_webserver_internal() {
+    if (webserver_active_ref()) return true;
+    if (active_mode_ref() == Mode::Web) return true;
+    if (!ftht::create_server(to_web_config(active_config_ref()))) return false;
+    webserver_active_ref() = true;
+    frame_target_ref() = FrameTarget::Normal;
+    if (active_mode_ref() == Mode::Gui) {
+        ftui::set_window_size(260, 120);
+        ftui::request_redraw();
+    } else if (active_mode_ref() == Mode::Tui) {
+        ftti::request_redraw();
+    }
+    return true;
+}
+
+inline void stop_webserver_internal() {
+    if (!webserver_active_ref()) return;
+    ftht::shutdown();
+    webserver_active_ref() = false;
+    frame_target_ref() = FrameTarget::Normal;
+    const Config& cfg = active_config_ref();
+    if (active_mode_ref() == Mode::Gui) {
+        ftui::set_window_size(cfg.width, cfg.height);
+        ftui::request_redraw();
+    } else if (active_mode_ref() == Mode::Tui) {
+        ftti::request_redraw();
+    }
+}
+
+inline bool toggle_webserver_command(const char* command) {
+    if (!command) return false;
+    if (std::strcmp(command, "web") != 0 &&
+        std::strcmp(command, "ws") != 0 &&
+        std::strcmp(command, "webserver") != 0 &&
+        std::strcmp(command, "server") != 0) {
+        return false;
+    }
+    if (webserver_active_ref()) stop_webserver_internal();
+    else start_webserver_internal();
+    return true;
+}
+
 inline bool create_backend(Mode mode, const Config& cfg) {
     active_mode_ref() = mode;
-    if (mode == Mode::Gui) return ftui::create_window(to_gui_config(cfg));
+    frame_target_ref() = FrameTarget::Normal;
+    webserver_active_ref() = false;
+    if (mode == Mode::Gui) {
+        bool ok = ftui::create_window(to_gui_config(cfg));
+        if (ok) ftui::set_command_handler(toggle_webserver_command);
+        return ok;
+    }
     if (mode == Mode::Tui) return ftti::create_window(to_tui_config(cfg));
     if (mode == Mode::Web) return ftht::create_server(to_web_config(cfg));
     return false;
@@ -12276,6 +12388,18 @@ inline Mode active_mode() {
 
 inline const Config& config() {
     return detail::active_config_ref();
+}
+
+inline bool webserver_running() {
+    return detail::webserver_active_ref() || active_mode() == Mode::Web;
+}
+
+inline bool start_webserver() {
+    return detail::start_webserver_internal();
+}
+
+inline void stop_webserver() {
+    detail::stop_webserver_internal();
 }
 
 inline bool create_window(const Config& cfg = {}, int argc = 0, char** argv = nullptr) {
@@ -12297,13 +12421,51 @@ inline bool create_window(int argc, char** argv, const Config& cfg = {}) {
 
 inline bool pump() {
     Mode mode = active_mode();
-    if (mode == Mode::Gui) return ftui::pump();
-    if (mode == Mode::Tui) return ftti::pump();
+    detail::frame_target_ref() = detail::FrameTarget::Normal;
+    if (mode == Mode::Gui) {
+        bool ok = ftui::pump();
+        if (!ok) return false;
+        if (detail::webserver_active_ref()) {
+            detail::frame_target_ref() = ftht::pump(0)
+                ? detail::FrameTarget::WebMirror
+                : detail::FrameTarget::GuiWebControl;
+        }
+        return true;
+    }
+    if (mode == Mode::Tui) {
+        bool ok = ftti::pump();
+        if (!ok) return false;
+        if (detail::webserver_active_ref()) {
+            detail::frame_target_ref() = ftht::pump(0)
+                ? detail::FrameTarget::WebMirror
+                : detail::FrameTarget::TuiWebControl;
+        }
+        return true;
+    }
     if (mode == Mode::Web) return ftht::pump(-1);
     return false;
 }
 
 inline void begin() {
+    detail::FrameTarget target = detail::frame_target_ref();
+    if (target == detail::FrameTarget::WebMirror) {
+        ftht::begin();
+        return;
+    }
+    if (target == detail::FrameTarget::GuiWebControl) {
+        ftui::begin();
+        ftui::text("Web server running");
+        ftui::text_wrapped(ftht::url());
+        if (ftui::button("Stop web server", ftui::ColorRole::Warning)) detail::stop_webserver_internal();
+        return;
+    }
+    if (target == detail::FrameTarget::TuiWebControl) {
+        ftti::begin();
+        ftti::text("Web server running");
+        ftti::text_wrapped(ftht::url());
+        if (ftti::button("Stop web server", ftti::ColorRole::Warning)) detail::stop_webserver_internal();
+        return;
+    }
     Mode mode = active_mode();
     if (mode == Mode::Gui) ftui::begin();
     else if (mode == Mode::Tui) ftti::begin();
@@ -12311,6 +12473,23 @@ inline void begin() {
 }
 
 inline void end() {
+    detail::FrameTarget target = detail::frame_target_ref();
+    if (target == detail::FrameTarget::WebMirror) {
+        ftht::end();
+        if (detail::render_mode() == Mode::Gui) ftui::request_redraw();
+        else if (detail::render_mode() == Mode::Tui) ftti::request_redraw();
+        return;
+    }
+    if (target == detail::FrameTarget::GuiWebControl) {
+        ftui::end();
+        ftui::request_redraw();
+        return;
+    }
+    if (target == detail::FrameTarget::TuiWebControl) {
+        ftti::end();
+        ftti::request_redraw();
+        return;
+    }
     Mode mode = active_mode();
     if (mode == Mode::Gui) ftui::end();
     else if (mode == Mode::Tui) ftti::end();
@@ -12318,6 +12497,7 @@ inline void end() {
 }
 
 inline void shutdown() {
+    detail::stop_webserver_internal();
     Mode mode = active_mode();
     if (mode == Mode::Gui) ftui::shutdown();
     else if (mode == Mode::Tui) ftti::shutdown();
@@ -12332,47 +12512,47 @@ inline void request_redraw() {
 }
 
 inline void set_quit_on_ctrl_q(bool enabled) {
-    if (active_mode() == Mode::Gui) ftui::set_quit_on_ctrl_q(enabled);
-    else if (active_mode() == Mode::Tui) ftti::set_quit_on_ctrl_q(enabled);
+    if (detail::render_mode() == Mode::Gui) ftui::set_quit_on_ctrl_q(enabled);
+    else if (detail::render_mode() == Mode::Tui) ftti::set_quit_on_ctrl_q(enabled);
 }
 
 inline void set_fps_limit(int fps) {
-    if (active_mode() == Mode::Gui) ftui::set_fps_limit(fps);
-    else if (active_mode() == Mode::Tui) ftti::set_fps_limit(fps);
+    if (detail::render_mode() == Mode::Gui) ftui::set_fps_limit(fps);
+    else if (detail::render_mode() == Mode::Tui) ftti::set_fps_limit(fps);
 }
 
 inline int get_fps_limit() {
-    if (active_mode() == Mode::Gui) return ftui::get_fps_limit();
-    if (active_mode() == Mode::Tui) return ftti::get_fps_limit();
+    if (detail::render_mode() == Mode::Gui) return ftui::get_fps_limit();
+    if (detail::render_mode() == Mode::Tui) return ftti::get_fps_limit();
     return 0;
 }
 
 inline void set_backdrop_effect(BackdropEffect effect) {
-    if (active_mode() == Mode::Gui) ftui::set_backdrop_effect(effect);
-    else if (active_mode() == Mode::Tui) ftti::set_backdrop_effect(static_cast<ftti::BackdropEffect>(static_cast<int>(effect)));
+    if (detail::render_mode() == Mode::Gui) ftui::set_backdrop_effect(effect);
+    else if (detail::render_mode() == Mode::Tui) ftti::set_backdrop_effect(static_cast<ftti::BackdropEffect>(static_cast<int>(effect)));
 }
 
 inline void set_dither_size(int px) {
-    if (active_mode() == Mode::Gui) ftui::set_dither_size(px);
-    else if (active_mode() == Mode::Tui) ftti::set_dither_size(px);
+    if (detail::render_mode() == Mode::Gui) ftui::set_dither_size(px);
+    else if (detail::render_mode() == Mode::Tui) ftti::set_dither_size(px);
 }
 
 inline void set_window_transparency(WindowTransparency mode) {
-    if (active_mode() == Mode::Gui) ftui::set_window_transparency(mode);
+    if (detail::render_mode() == Mode::Gui) ftui::set_window_transparency(mode);
 }
 
 inline void set_window_opacity(float opacity) {
-    if (active_mode() == Mode::Gui) ftui::set_window_opacity(opacity);
+    if (detail::render_mode() == Mode::Gui) ftui::set_window_opacity(opacity);
 }
 
 inline void set_window_icon(void* native_icon) {
-    if (active_mode() == Mode::Gui) ftui::set_window_icon(native_icon);
-    else if (active_mode() == Mode::Tui) ftti::set_window_icon(native_icon);
+    if (detail::render_mode() == Mode::Gui) ftui::set_window_icon(native_icon);
+    else if (detail::render_mode() == Mode::Tui) ftti::set_window_icon(native_icon);
 }
 
 inline void set_window_icon_builtin(BuiltinIcon variant = BuiltinIcon::Symbol) {
-    if (active_mode() == Mode::Gui) ftui::set_window_icon_builtin(variant);
-    else if (active_mode() == Mode::Tui) ftti::set_window_icon_builtin(static_cast<ftti::BuiltinIcon>(static_cast<int>(variant)));
+    if (detail::render_mode() == Mode::Gui) ftui::set_window_icon_builtin(variant);
+    else if (detail::render_mode() == Mode::Tui) ftti::set_window_icon_builtin(static_cast<ftti::BuiltinIcon>(static_cast<int>(variant)));
 }
 
 inline Style default_dark_style() { return detail::style_ref(); }
@@ -12397,295 +12577,303 @@ inline Color color_from_hex(const char* hex) { return ftui::color_from_hex(hex);
 inline Color color_from_hex(std::string_view hex) { return ftui::color_from_hex(hex); }
 
 inline void push_color(ColorRole role, Color color) {
-    if (active_mode() == Mode::Gui) ftui::push_color(role, color);
-    else if (active_mode() == Mode::Tui) ftti::push_color(detail::to_tui_role(role), detail::to_tui(color));
+    if (detail::render_mode() == Mode::Gui) ftui::push_color(role, color);
+    else if (detail::render_mode() == Mode::Tui) ftti::push_color(detail::to_tui_role(role), detail::to_tui(color));
 }
 
 inline void pop_color() {
-    if (active_mode() == Mode::Gui) ftui::pop_color();
-    else if (active_mode() == Mode::Tui) ftti::pop_color();
+    if (detail::render_mode() == Mode::Gui) ftui::pop_color();
+    else if (detail::render_mode() == Mode::Tui) ftti::pop_color();
 }
 
 inline void set_next_color(ColorRole role, Color color) {
-    if (active_mode() == Mode::Gui) ftui::set_next_color(role, color);
-    else if (active_mode() == Mode::Tui) ftti::set_next_color(detail::to_tui_role(role), detail::to_tui(color));
+    if (detail::render_mode() == Mode::Gui) ftui::set_next_color(role, color);
+    else if (detail::render_mode() == Mode::Tui) ftti::set_next_color(detail::to_tui_role(role), detail::to_tui(color));
 }
 
 inline void text(const char* label) {
-    if (active_mode() == Mode::Gui) ftui::text(label);
-    else if (active_mode() == Mode::Tui) ftti::text(label);
-    else if (active_mode() == Mode::Web) ftht::text(label);
+    if (detail::render_mode() == Mode::Gui) ftui::text(label);
+    else if (detail::render_mode() == Mode::Tui) ftti::text(label);
+    else if (detail::render_mode() == Mode::Web) ftht::text(label);
 }
 
 inline void text_wrapped(const char* value) {
-    if (active_mode() == Mode::Gui) ftui::text_wrapped(value);
-    else if (active_mode() == Mode::Tui) ftti::text_wrapped(value);
-    else if (active_mode() == Mode::Web) ftht::text_wrapped(value);
+    if (detail::render_mode() == Mode::Gui) ftui::text_wrapped(value);
+    else if (detail::render_mode() == Mode::Tui) ftti::text_wrapped(value);
+    else if (detail::render_mode() == Mode::Web) ftht::text_wrapped(value);
 }
 
 inline void separator() {
-    if (active_mode() == Mode::Gui) ftui::separator();
-    else if (active_mode() == Mode::Tui) ftti::separator();
-    else if (active_mode() == Mode::Web) ftht::separator();
+    if (detail::render_mode() == Mode::Gui) ftui::separator();
+    else if (detail::render_mode() == Mode::Tui) ftti::separator();
+    else if (detail::render_mode() == Mode::Web) ftht::separator();
 }
 
 inline void spacing(float px = 8.0f) {
-    if (active_mode() == Mode::Gui) ftui::spacing(px);
-    else if (active_mode() == Mode::Tui) ftti::spacing(px);
-    else if (active_mode() == Mode::Web) ftht::spacing(px);
+    if (detail::render_mode() == Mode::Gui) ftui::spacing(px);
+    else if (detail::render_mode() == Mode::Tui) ftti::spacing(px);
+    else if (detail::render_mode() == Mode::Web) ftht::spacing(px);
 }
 
 inline bool input(const char* label, char* buffer, int buffer_size,
                   InputFlags flags = InputFlags::Default, bool* enter_pressed = nullptr) {
-    if (active_mode() == Mode::Gui) return ftui::input(label, buffer, buffer_size, flags, enter_pressed);
-    if (active_mode() == Mode::Tui) return ftti::input(label, buffer, buffer_size, detail::to_tui_input_flags(flags), enter_pressed);
-    if (active_mode() == Mode::Web) return ftht::input(label, buffer, buffer_size, detail::to_web_input_flags(flags), enter_pressed);
+    if (detail::render_mode() == Mode::Gui) return ftui::input(label, buffer, buffer_size, flags, enter_pressed);
+    if (detail::render_mode() == Mode::Tui) return ftti::input(label, buffer, buffer_size, detail::to_tui_input_flags(flags), enter_pressed);
+    if (detail::render_mode() == Mode::Web) return ftht::input(label, buffer, buffer_size, detail::to_web_input_flags(flags), enter_pressed);
     return false;
 }
 
 inline bool text_area(const char* label, char* buffer, int buffer_size, int rows = 5) {
-    if (active_mode() == Mode::Gui) return ftui::text_area(label, buffer, buffer_size, rows);
-    if (active_mode() == Mode::Tui) return ftti::text_area(label, buffer, buffer_size, rows);
-    if (active_mode() == Mode::Web) return ftht::text_area(label, buffer, buffer_size, rows);
+    if (detail::render_mode() == Mode::Gui) return ftui::text_area(label, buffer, buffer_size, rows);
+    if (detail::render_mode() == Mode::Tui) return ftti::text_area(label, buffer, buffer_size, rows);
+    if (detail::render_mode() == Mode::Web) return ftht::text_area(label, buffer, buffer_size, rows);
     return false;
 }
 
 inline bool text_area_ex(const char* label, char* buffer, int buffer_size, int rows = 5,
                          TextAreaFlags flags = TextAreaFlags::Default) {
-    if (active_mode() == Mode::Gui) return ftui::text_area_ex(label, buffer, buffer_size, rows, flags);
-    if (active_mode() == Mode::Tui) return ftti::text_area_ex(label, buffer, buffer_size, rows, detail::to_tui_text_area_flags(flags));
-    if (active_mode() == Mode::Web) return ftht::text_area_ex(label, buffer, buffer_size, rows, detail::to_web_text_area_flags(flags));
+    if (detail::render_mode() == Mode::Gui) return ftui::text_area_ex(label, buffer, buffer_size, rows, flags);
+    if (detail::render_mode() == Mode::Tui) return ftti::text_area_ex(label, buffer, buffer_size, rows, detail::to_tui_text_area_flags(flags));
+    if (detail::render_mode() == Mode::Web) return ftht::text_area_ex(label, buffer, buffer_size, rows, detail::to_web_text_area_flags(flags));
     return false;
 }
 
 inline void log_view(const char* label, const char* value, int rows = 8,
                      LogViewFlags flags = LogViewFlags::AutoScrollBottom) {
-    if (active_mode() == Mode::Gui) ftui::log_view(label, value, rows, flags);
-    else if (active_mode() == Mode::Tui) ftti::log_view(label, value, rows, detail::to_tui_log_flags(flags));
-    else if (active_mode() == Mode::Web) ftht::log_view(label, value, rows, detail::to_web_log_flags(flags));
+    if (detail::render_mode() == Mode::Gui) ftui::log_view(label, value, rows, flags);
+    else if (detail::render_mode() == Mode::Tui) ftti::log_view(label, value, rows, detail::to_tui_log_flags(flags));
+    else if (detail::render_mode() == Mode::Web) ftht::log_view(label, value, rows, detail::to_web_log_flags(flags));
 }
 
 inline bool checkbox(const char* label, bool* value) {
-    if (active_mode() == Mode::Gui) return ftui::checkbox(label, value);
-    if (active_mode() == Mode::Tui) return ftti::checkbox(label, value);
-    if (active_mode() == Mode::Web) return ftht::checkbox(label, value);
+    if (detail::render_mode() == Mode::Gui) return ftui::checkbox(label, value);
+    if (detail::render_mode() == Mode::Tui) return ftti::checkbox(label, value);
+    if (detail::render_mode() == Mode::Web) return ftht::checkbox(label, value);
     return false;
 }
 
 inline bool slider_float(const char* label, float* value, float min_v, float max_v) {
-    if (active_mode() == Mode::Gui) return ftui::slider_float(label, value, min_v, max_v);
-    if (active_mode() == Mode::Tui) return ftti::slider_float(label, value, min_v, max_v);
-    if (active_mode() == Mode::Web) return ftht::slider_float(label, value, min_v, max_v);
+    if (detail::render_mode() == Mode::Gui) return ftui::slider_float(label, value, min_v, max_v);
+    if (detail::render_mode() == Mode::Tui) return ftti::slider_float(label, value, min_v, max_v);
+    if (detail::render_mode() == Mode::Web) return ftht::slider_float(label, value, min_v, max_v);
     return false;
 }
 
 inline bool button(const char* label) {
-    if (active_mode() == Mode::Gui) return ftui::button(label);
-    if (active_mode() == Mode::Tui) return ftti::button(label);
-    if (active_mode() == Mode::Web) return ftht::button(label);
+    if (detail::render_mode() == Mode::Gui) return ftui::button(label);
+    if (detail::render_mode() == Mode::Tui) return ftti::button(label);
+    if (detail::render_mode() == Mode::Web) return ftht::button(label);
     return false;
 }
 
 inline bool button(const char* label, ColorRole role) {
-    if (active_mode() == Mode::Gui) return ftui::button(label, role);
-    if (active_mode() == Mode::Tui) return ftti::button(label, detail::to_tui_role(role));
-    if (active_mode() == Mode::Web) return ftht::button(label, detail::to_web_role(role));
+    if (detail::render_mode() == Mode::Gui) return ftui::button(label, role);
+    if (detail::render_mode() == Mode::Tui) return ftti::button(label, detail::to_tui_role(role));
+    if (detail::render_mode() == Mode::Web) return ftht::button(label, detail::to_web_role(role));
     return false;
 }
 
 inline bool button(const char* label, Color color) {
-    if (active_mode() == Mode::Gui) return ftui::button(label, color);
-    if (active_mode() == Mode::Tui) return ftti::button(label, detail::to_tui(color));
-    if (active_mode() == Mode::Web) return ftht::button(label, detail::to_web(color));
+    if (detail::render_mode() == Mode::Gui) return ftui::button(label, color);
+    if (detail::render_mode() == Mode::Tui) return ftti::button(label, detail::to_tui(color));
+    if (detail::render_mode() == Mode::Web) return ftht::button(label, detail::to_web(color));
+    return false;
+}
+
+inline bool webserver_button(const char* start_label = "Start web server") {
+    if (webserver_running()) return false;
+    if (::ft::button(start_label, ColorRole::Accent)) {
+        return start_webserver();
+    }
     return false;
 }
 
 inline bool dropdown(const char* label, const char* const* items, int count, int* selected, int popup_rows = 8) {
-    if (active_mode() == Mode::Gui) return ftui::dropdown(label, items, count, selected, popup_rows);
-    if (active_mode() == Mode::Tui) return ftti::dropdown(label, items, count, selected, popup_rows);
-    if (active_mode() == Mode::Web) return ftht::dropdown(label, items, count, selected, popup_rows);
+    if (detail::render_mode() == Mode::Gui) return ftui::dropdown(label, items, count, selected, popup_rows);
+    if (detail::render_mode() == Mode::Tui) return ftti::dropdown(label, items, count, selected, popup_rows);
+    if (detail::render_mode() == Mode::Web) return ftht::dropdown(label, items, count, selected, popup_rows);
     return false;
 }
 
 inline bool listbox(const char* label, const char* const* items, int count, int* selected, int visible_rows = 6) {
-    if (active_mode() == Mode::Gui) return ftui::listbox(label, items, count, selected, visible_rows);
-    if (active_mode() == Mode::Tui) return ftti::listbox(label, items, count, selected, visible_rows);
-    if (active_mode() == Mode::Web) return ftht::listbox(label, items, count, selected, visible_rows);
+    if (detail::render_mode() == Mode::Gui) return ftui::listbox(label, items, count, selected, visible_rows);
+    if (detail::render_mode() == Mode::Tui) return ftti::listbox(label, items, count, selected, visible_rows);
+    if (detail::render_mode() == Mode::Web) return ftht::listbox(label, items, count, selected, visible_rows);
     return false;
 }
 
 inline bool radio_group(const char* label, const char* const* items, int count, int* selected, int columns = 1) {
-    if (active_mode() == Mode::Gui) return ftui::radio_group(label, items, count, selected, columns);
-    if (active_mode() == Mode::Tui) return ftti::radio_group(label, items, count, selected, columns);
-    if (active_mode() == Mode::Web) return ftht::radio_group(label, items, count, selected, columns);
+    if (detail::render_mode() == Mode::Gui) return ftui::radio_group(label, items, count, selected, columns);
+    if (detail::render_mode() == Mode::Tui) return ftti::radio_group(label, items, count, selected, columns);
+    if (detail::render_mode() == Mode::Web) return ftht::radio_group(label, items, count, selected, columns);
     return false;
 }
 
 inline bool collapsing_header(const char* label, bool* open = nullptr) {
-    if (active_mode() == Mode::Gui) return ftui::collapsing_header(label, open);
-    if (active_mode() == Mode::Tui) return ftti::collapsing_header(label, open);
-    if (active_mode() == Mode::Web) return ftht::collapsing_header(label, open);
+    if (detail::render_mode() == Mode::Gui) return ftui::collapsing_header(label, open);
+    if (detail::render_mode() == Mode::Tui) return ftti::collapsing_header(label, open);
+    if (detail::render_mode() == Mode::Web) return ftht::collapsing_header(label, open);
     return false;
 }
 
 inline bool side_menu(const char* label, const char* const* items, int count, int* selected) {
-    if (active_mode() == Mode::Gui) return ftui::side_menu(label, items, count, selected);
-    if (active_mode() == Mode::Tui) return ftti::side_menu(label, items, count, selected);
-    if (active_mode() == Mode::Web) return ftht::radio_group(label, items, count, selected, 1);
+    if (detail::render_mode() == Mode::Gui) return ftui::side_menu(label, items, count, selected);
+    if (detail::render_mode() == Mode::Tui) return ftti::side_menu(label, items, count, selected);
+    if (detail::render_mode() == Mode::Web) return ftht::radio_group(label, items, count, selected, 1);
     return false;
 }
 
 inline bool side_menu_drawer(const char* label, const char* const* items, int count, int* selected, float width = 260.0f) {
-    if (active_mode() == Mode::Gui) return ftui::side_menu_drawer(label, items, count, selected, width);
+    if (detail::render_mode() == Mode::Gui) return ftui::side_menu_drawer(label, items, count, selected, width);
     return side_menu(label, items, count, selected);
 }
 
 inline bool tabs(const char* const* labels, int count, int* selected) {
-    if (active_mode() == Mode::Gui) return ftui::tabs(labels, count, selected);
-    if (active_mode() == Mode::Tui) return ftti::tabs(labels, count, selected);
-    if (active_mode() == Mode::Web) return ftht::tabs(labels, count, selected);
+    if (detail::render_mode() == Mode::Gui) return ftui::tabs(labels, count, selected);
+    if (detail::render_mode() == Mode::Tui) return ftti::tabs(labels, count, selected);
+    if (detail::render_mode() == Mode::Web) return ftht::tabs(labels, count, selected);
     return false;
 }
 
 inline void row(int cols, std::function<void()> fn) {
-    if (active_mode() == Mode::Gui) ftui::row(cols, fn);
-    else if (active_mode() == Mode::Tui) ftti::row(cols, fn);
-    else if (active_mode() == Mode::Web) ftht::row(cols, fn);
+    if (detail::render_mode() == Mode::Gui) ftui::row(cols, fn);
+    else if (detail::render_mode() == Mode::Tui) ftti::row(cols, fn);
+    else if (detail::render_mode() == Mode::Web) ftht::row(cols, fn);
 }
 
 inline void row(std::initializer_list<float> weights, std::function<void()> fn) {
-    if (active_mode() == Mode::Gui) ftui::row(weights, fn);
-    else if (active_mode() == Mode::Tui) ftti::row(weights, fn);
-    else if (active_mode() == Mode::Web) ftht::row(weights, fn);
+    if (detail::render_mode() == Mode::Gui) ftui::row(weights, fn);
+    else if (detail::render_mode() == Mode::Tui) ftti::row(weights, fn);
+    else if (detail::render_mode() == Mode::Web) ftht::row(weights, fn);
 }
 
 inline void split(std::initializer_list<float> columns, std::function<void()> fn) {
-    if (active_mode() == Mode::Gui) ftui::split(columns, fn);
-    else if (active_mode() == Mode::Tui) ftti::split(columns, fn);
-    else if (active_mode() == Mode::Web) ftht::row(columns, fn);
+    if (detail::render_mode() == Mode::Gui) ftui::split(columns, fn);
+    else if (detail::render_mode() == Mode::Tui) ftti::split(columns, fn);
+    else if (detail::render_mode() == Mode::Web) ftht::row(columns, fn);
 }
 
 inline void side_layout(float side_width, std::function<void()> fn) {
-    if (active_mode() == Mode::Gui) ftui::side_layout(side_width, fn);
-    else if (active_mode() == Mode::Tui) ftti::side_layout(side_width, fn);
-    else if (active_mode() == Mode::Web) fn();
+    if (detail::render_mode() == Mode::Gui) ftui::side_layout(side_width, fn);
+    else if (detail::render_mode() == Mode::Tui) ftti::side_layout(side_width, fn);
+    else if (detail::render_mode() == Mode::Web) fn();
 }
 
 inline void content(std::function<void()> fn) {
-    if (active_mode() == Mode::Gui) ftui::content(fn);
-    else if (active_mode() == Mode::Tui) ftti::content(fn);
-    else if (active_mode() == Mode::Web) fn();
+    if (detail::render_mode() == Mode::Gui) ftui::content(fn);
+    else if (detail::render_mode() == Mode::Tui) ftti::content(fn);
+    else if (detail::render_mode() == Mode::Web) fn();
 }
 
 inline void scroll_area(const char* label, float height, std::function<void()> fn) {
-    if (active_mode() == Mode::Gui) ftui::scroll_area(label, height, fn);
-    else if (active_mode() == Mode::Tui) ftti::scroll_area(label, height, fn);
-    else if (active_mode() == Mode::Web) ftht::scroll_area(label, height, fn);
+    if (detail::render_mode() == Mode::Gui) ftui::scroll_area(label, height, fn);
+    else if (detail::render_mode() == Mode::Tui) ftti::scroll_area(label, height, fn);
+    else if (detail::render_mode() == Mode::Web) ftht::scroll_area(label, height, fn);
 }
 
 inline void set_next_width(float px) {
-    if (active_mode() == Mode::Gui) ftui::set_next_width(px);
-    else if (active_mode() == Mode::Tui) ftti::set_next_width(px);
-    else if (active_mode() == Mode::Web) ftht::set_next_width(px);
+    if (detail::render_mode() == Mode::Gui) ftui::set_next_width(px);
+    else if (detail::render_mode() == Mode::Tui) ftti::set_next_width(px);
+    else if (detail::render_mode() == Mode::Web) ftht::set_next_width(px);
 }
 
 inline void set_next_fill() {
-    if (active_mode() == Mode::Gui) ftui::set_next_fill();
-    else if (active_mode() == Mode::Tui) ftti::set_next_fill();
-    else if (active_mode() == Mode::Web) ftht::set_next_fill();
+    if (detail::render_mode() == Mode::Gui) ftui::set_next_fill();
+    else if (detail::render_mode() == Mode::Tui) ftti::set_next_fill();
+    else if (detail::render_mode() == Mode::Web) ftht::set_next_fill();
 }
 
 inline void set_next_percent(float pct) {
-    if (active_mode() == Mode::Gui) ftui::set_next_percent(pct);
-    else if (active_mode() == Mode::Tui) ftti::set_next_percent(pct);
-    else if (active_mode() == Mode::Web) ftht::set_next_percent(pct);
+    if (detail::render_mode() == Mode::Gui) ftui::set_next_percent(pct);
+    else if (detail::render_mode() == Mode::Tui) ftti::set_next_percent(pct);
+    else if (detail::render_mode() == Mode::Web) ftht::set_next_percent(pct);
 }
 
 inline void set_next_limits(float min_px, float max_px) {
-    if (active_mode() == Mode::Gui) ftui::set_next_limits(min_px, max_px);
-    else if (active_mode() == Mode::Tui) ftti::set_next_limits(min_px, max_px);
-    else if (active_mode() == Mode::Web) ftht::set_next_limits(min_px, max_px);
+    if (detail::render_mode() == Mode::Gui) ftui::set_next_limits(min_px, max_px);
+    else if (detail::render_mode() == Mode::Tui) ftti::set_next_limits(min_px, max_px);
+    else if (detail::render_mode() == Mode::Web) ftht::set_next_limits(min_px, max_px);
 }
 
 inline void set_next_align(Align align) {
-    if (active_mode() == Mode::Gui) ftui::set_next_align(align);
-    else if (active_mode() == Mode::Tui) ftti::set_next_align(static_cast<ftti::Align>(static_cast<int>(align)));
-    else if (active_mode() == Mode::Web) ftht::set_next_align(static_cast<ftht::Align>(static_cast<int>(align)));
+    if (detail::render_mode() == Mode::Gui) ftui::set_next_align(align);
+    else if (detail::render_mode() == Mode::Tui) ftti::set_next_align(static_cast<ftti::Align>(static_cast<int>(align)));
+    else if (detail::render_mode() == Mode::Web) ftht::set_next_align(static_cast<ftht::Align>(static_cast<int>(align)));
 }
 
 inline void open_modal(const char* label) {
-    if (active_mode() == Mode::Gui) ftui::open_modal(label);
-    else if (active_mode() == Mode::Tui) ftti::open_modal(label);
-    else if (active_mode() == Mode::Web) ftht::open_modal(label);
+    if (detail::render_mode() == Mode::Gui) ftui::open_modal(label);
+    else if (detail::render_mode() == Mode::Tui) ftti::open_modal(label);
+    else if (detail::render_mode() == Mode::Web) ftht::open_modal(label);
 }
 
 inline bool modal(const char* label, std::function<void()> fn) {
-    if (active_mode() == Mode::Gui) return ftui::modal(label, fn);
-    if (active_mode() == Mode::Tui) return ftti::modal(label, fn);
-    if (active_mode() == Mode::Web) return ftht::modal(label, fn);
+    if (detail::render_mode() == Mode::Gui) return ftui::modal(label, fn);
+    if (detail::render_mode() == Mode::Tui) return ftti::modal(label, fn);
+    if (detail::render_mode() == Mode::Web) return ftht::modal(label, fn);
     return false;
 }
 
 inline void close_modal() {
-    if (active_mode() == Mode::Gui) ftui::close_modal();
-    else if (active_mode() == Mode::Tui) ftti::close_modal();
-    else if (active_mode() == Mode::Web) ftht::close_modal();
+    if (detail::render_mode() == Mode::Gui) ftui::close_modal();
+    else if (detail::render_mode() == Mode::Tui) ftti::close_modal();
+    else if (detail::render_mode() == Mode::Web) ftht::close_modal();
 }
 
 inline void begin_disabled() {
-    if (active_mode() == Mode::Gui) ftui::begin_disabled();
-    else if (active_mode() == Mode::Tui) ftti::begin_disabled();
-    else if (active_mode() == Mode::Web) ftht::begin_disabled();
+    if (detail::render_mode() == Mode::Gui) ftui::begin_disabled();
+    else if (detail::render_mode() == Mode::Tui) ftti::begin_disabled();
+    else if (detail::render_mode() == Mode::Web) ftht::begin_disabled();
 }
 
 inline void end_disabled() {
-    if (active_mode() == Mode::Gui) ftui::end_disabled();
-    else if (active_mode() == Mode::Tui) ftti::end_disabled();
-    else if (active_mode() == Mode::Web) ftht::end_disabled();
+    if (detail::render_mode() == Mode::Gui) ftui::end_disabled();
+    else if (detail::render_mode() == Mode::Tui) ftti::end_disabled();
+    else if (detail::render_mode() == Mode::Web) ftht::end_disabled();
 }
 
 inline void tooltip(const char* value) {
-    if (active_mode() == Mode::Gui) ftui::tooltip(value);
-    else if (active_mode() == Mode::Tui) ftti::tooltip(value);
-    else if (active_mode() == Mode::Web) ftht::tooltip(value);
+    if (detail::render_mode() == Mode::Gui) ftui::tooltip(value);
+    else if (detail::render_mode() == Mode::Tui) ftti::tooltip(value);
+    else if (detail::render_mode() == Mode::Web) ftht::tooltip(value);
 }
 
 inline void request_focus(const char* label) {
-    if (active_mode() == Mode::Gui) ftui::request_focus(label);
-    else if (active_mode() == Mode::Tui) ftti::request_focus(label);
-    else if (active_mode() == Mode::Web) ftht::request_focus(label);
+    if (detail::render_mode() == Mode::Gui) ftui::request_focus(label);
+    else if (detail::render_mode() == Mode::Tui) ftti::request_focus(label);
+    else if (detail::render_mode() == Mode::Web) ftht::request_focus(label);
 }
 
 inline float calc_text_width(const char* value) {
-    if (active_mode() == Mode::Gui) return ftui::calc_text_width(value);
-    if (active_mode() == Mode::Tui) return ftti::calc_text_width(value);
-    if (active_mode() == Mode::Web) return ftht::calc_text_width(value);
+    if (detail::render_mode() == Mode::Gui) return ftui::calc_text_width(value);
+    if (detail::render_mode() == Mode::Tui) return ftti::calc_text_width(value);
+    if (detail::render_mode() == Mode::Web) return ftht::calc_text_width(value);
     return value ? (float)std::strlen(value) : 0.0f;
 }
 
 inline float calc_text_height(const char* value, float wrap_width) {
-    if (active_mode() == Mode::Gui) return ftui::calc_text_height(value, wrap_width);
-    if (active_mode() == Mode::Tui) return ftti::calc_text_height(value, wrap_width);
-    if (active_mode() == Mode::Web) return ftht::calc_text_height(value, wrap_width);
+    if (detail::render_mode() == Mode::Gui) return ftui::calc_text_height(value, wrap_width);
+    if (detail::render_mode() == Mode::Tui) return ftti::calc_text_height(value, wrap_width);
+    if (detail::render_mode() == Mode::Web) return ftht::calc_text_height(value, wrap_width);
     return 0.0f;
 }
 
 inline void toast(const Toast& value) {
-    if (active_mode() == Mode::Gui) {
+    if (detail::render_mode() == Mode::Gui) {
         ftui::Toast t;
         t.message = value.message;
         t.type = value.type;
         t.duration_ms = value.duration_ms;
         t.dismissible = value.dismissible;
         ftui::toast(t);
-    } else if (active_mode() == Mode::Tui) {
+    } else if (detail::render_mode() == Mode::Tui) {
         ftti::Toast t;
         t.message = value.message;
         t.type = detail::to_tui_toast_type(value.type);
         t.duration_ms = value.duration_ms;
         t.dismissible = value.dismissible;
         ftti::toast(t);
-    } else if (active_mode() == Mode::Web) {
+    } else if (detail::render_mode() == Mode::Web) {
         ftht::Toast t;
         t.message = value.message ? value.message : "";
         t.type = detail::to_web_toast_type(value.type);
@@ -12702,14 +12890,14 @@ inline void toast_warning(const char* message) { Toast t; t.message = message; t
 inline void toast_error(const char* message) { Toast t; t.message = message; t.type = ToastType::Error; toast(t); }
 
 inline void clear_toasts() {
-    if (active_mode() == Mode::Gui) ftui::clear_toasts();
-    else if (active_mode() == Mode::Tui) ftti::clear_toasts();
+    if (detail::render_mode() == Mode::Gui) ftui::clear_toasts();
+    else if (detail::render_mode() == Mode::Tui) ftti::clear_toasts();
 }
 
 inline void progress_bar(float progress) {
-    if (active_mode() == Mode::Gui) ftui::progress_bar(progress);
-    else if (active_mode() == Mode::Tui) ftti::progress_bar(progress);
-    else if (active_mode() == Mode::Web) {
+    if (detail::render_mode() == Mode::Gui) ftui::progress_bar(progress);
+    else if (detail::render_mode() == Mode::Tui) ftti::progress_bar(progress);
+    else if (detail::render_mode() == Mode::Web) {
         char text[64];
         std::snprintf(text, sizeof(text), "Progress %.0f%%", std::max(0.0f, std::min(1.0f, progress)) * 100.0f);
         ftht::text(text);
@@ -12717,13 +12905,13 @@ inline void progress_bar(float progress) {
 }
 
 inline void progress_bar(float progress, const char* label_or_mask_path) {
-    if (active_mode() == Mode::Gui) ftui::progress_bar(progress, label_or_mask_path);
-    else if (active_mode() == Mode::Tui) ftti::progress_bar(progress, label_or_mask_path);
-    else if (active_mode() == Mode::Web) ftht::text(label_or_mask_path ? label_or_mask_path : "Progress");
+    if (detail::render_mode() == Mode::Gui) ftui::progress_bar(progress, label_or_mask_path);
+    else if (detail::render_mode() == Mode::Tui) ftti::progress_bar(progress, label_or_mask_path);
+    else if (detail::render_mode() == Mode::Web) ftht::text(label_or_mask_path ? label_or_mask_path : "Progress");
 }
 
 inline void progress_bar(float progress, const ProgressStyle& style) {
-    if (active_mode() == Mode::Gui) {
+    if (detail::render_mode() == Mode::Gui) {
         ftui::ProgressStyle s;
         s.label = style.label;
         s.mask_path = style.mask_path;
@@ -12736,7 +12924,7 @@ inline void progress_bar(float progress, const ProgressStyle& style) {
         s.wave_front = style.wave_front;
         s.glint = style.glint;
         ftui::progress_bar(progress, s);
-    } else if (active_mode() == Mode::Tui) {
+    } else if (detail::render_mode() == Mode::Tui) {
         ftti::ProgressStyle s;
         s.label = style.label;
         s.mask_path = style.mask_path;
@@ -12747,7 +12935,7 @@ inline void progress_bar(float progress, const ProgressStyle& style) {
         s.wave_front = style.wave_front;
         s.glint = style.glint;
         ftti::progress_bar(progress, s);
-    } else if (active_mode() == Mode::Web) {
+    } else if (detail::render_mode() == Mode::Web) {
         progress_bar(progress, style.label);
     }
 }
@@ -12761,8 +12949,8 @@ inline ImageHandle* load_image(const char* utf8_path) {
 
 inline void image(ImageHandle* img, float width, float height) {
     if (!img) return;
-    if (active_mode() == Mode::Gui) ftui::image(img->gui, width, height);
-    else if (active_mode() == Mode::Tui) ftti::image(img->tui, width, height);
+    if (detail::render_mode() == Mode::Gui) ftui::image(img->gui, width, height);
+    else if (detail::render_mode() == Mode::Tui) ftti::image(img->tui, width, height);
 }
 
 inline void free_image(ImageHandle* img) {
@@ -12775,31 +12963,31 @@ inline void free_image(ImageHandle* img) {
 inline std::string open_file_dialog(const char* title = "Open File",
                                     const FileFilter* filters = nullptr,
                                     int filter_count = 0) {
-    if (active_mode() == Mode::Gui) return ftui::open_file_dialog(title, filters, filter_count);
-    if (active_mode() == Mode::Tui) return ftti::open_file_dialog(title, reinterpret_cast<const ftti::FileFilter*>(filters), filter_count);
+    if (detail::render_mode() == Mode::Gui) return ftui::open_file_dialog(title, filters, filter_count);
+    if (detail::render_mode() == Mode::Tui) return ftti::open_file_dialog(title, reinterpret_cast<const ftti::FileFilter*>(filters), filter_count);
     return {};
 }
 
 inline void open_child_window(const Config& cfg, std::function<void()> fn) {
-    if (active_mode() == Mode::Gui) ftui::open_child_window(detail::to_gui_config(cfg), fn);
+    if (detail::render_mode() == Mode::Gui) ftui::open_child_window(detail::to_gui_config(cfg), fn);
     else fn();
 }
 
 inline DebugState& debug() {
-    if (active_mode() == Mode::Gui) return ftui::debug();
+    if (detail::render_mode() == Mode::Gui) return ftui::debug();
     return detail::fallback_debug_ref();
 }
 
 inline void html(const char* markup) {
-    if (active_mode() == Mode::Web) ftht::html(markup);
+    if (detail::render_mode() == Mode::Web) ftht::html(markup);
 }
 
-inline const char* url() { return active_mode() == Mode::Web ? ftht::url() : ""; }
-inline const char* path() { return active_mode() == Mode::Web ? ftht::path() : ""; }
-inline const char* method() { return active_mode() == Mode::Web ? ftht::method() : ""; }
-inline bool is_post() { return active_mode() == Mode::Web && ftht::is_post(); }
-inline const char* param(const char* name) { return active_mode() == Mode::Web ? ftht::param(name) : ""; }
-inline void set_status(int code, const char* text) { if (active_mode() == Mode::Web) ftht::set_status(code, text); }
+inline const char* url() { return detail::render_mode() == Mode::Web ? ftht::url() : ""; }
+inline const char* path() { return detail::render_mode() == Mode::Web ? ftht::path() : ""; }
+inline const char* method() { return detail::render_mode() == Mode::Web ? ftht::method() : ""; }
+inline bool is_post() { return detail::render_mode() == Mode::Web && ftht::is_post(); }
+inline const char* param(const char* name) { return detail::render_mode() == Mode::Web ? ftht::param(name) : ""; }
+inline void set_status(int code, const char* text) { if (detail::render_mode() == Mode::Web) ftht::set_status(code, text); }
 inline uint64_t make_login_password_hash(const char* password, const char* salt = "ftht-login") {
     return ftht::make_login_password_hash(password, salt);
 }

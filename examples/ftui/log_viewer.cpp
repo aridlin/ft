@@ -27,13 +27,13 @@ static void append_event(char* buffer, int cap, const char* source, const char* 
     append_line(buffer, cap, line);
 }
 
-int main() {
-    ftui::Config cfg;
+int main(int argc, char** argv) {
+    ft::Config cfg;
     cfg.title = "FTUI Log Viewer";
     cfg.width = 1180;
     cfg.height = 860;
 
-    if (!ftui::create_window(cfg)) return 1;
+    if (!ft::create_window(cfg, argc, argv)) return 1;
 
     char notes[2048] =
         "Operator scratchpad:\n"
@@ -64,55 +64,55 @@ int main() {
         "Theme update propagated to the native titlebar."
     };
 
-    while (ftui::pump()) {
-        ftui::begin();
+    while (ft::pump()) {
+        ft::begin();
 
-        ftui::text("Operations log viewer");
-        ftui::text_wrapped("This example focuses on the read-only output path: a scrollable log view for live text, plus a writable notes pane for operator context.");
-        ftui::separator();
+        ft::text("Operations log viewer");
+        ft::text_wrapped("This example focuses on the read-only output path: a scrollable log view for live text, plus a writable notes pane for operator context.");
+        ft::separator();
 
-        ftui::row({1.0f, 1.0f, 0.8f, 0.8f}, [&]() {
-            ftui::dropdown("Source", sources, 4, &source_sel, 4);
-            ftui::dropdown("Severity", levels, 3, &level_sel, 3);
-            ftui::checkbox("Auto follow", &auto_follow);
-            ftui::checkbox("Wrap lines", &wrap_output);
+        ft::row({1.0f, 1.0f, 0.8f, 0.8f}, [&]() {
+            ft::dropdown("Source", sources, 4, &source_sel, 4);
+            ft::dropdown("Severity", levels, 3, &level_sel, 3);
+            ft::checkbox("Auto follow", &auto_follow);
+            ft::checkbox("Wrap lines", &wrap_output);
         });
 
-        ftui::LogViewFlags log_flags = ftui::LogViewFlags::Default;
-        if (wrap_output) log_flags = log_flags | ftui::LogViewFlags::WordWrap;
-        if (auto_follow) log_flags = log_flags | ftui::LogViewFlags::AutoScrollBottom;
+        ft::LogViewFlags log_flags = ft::LogViewFlags::Default;
+        if (wrap_output) log_flags = log_flags | ft::LogViewFlags::WordWrap;
+        if (auto_follow) log_flags = log_flags | ft::LogViewFlags::AutoScrollBottom;
 
-        ftui::row({2.0f, 1.2f}, [&]() {
-            ftui::log_view("Combined output", output, 16, log_flags);
-            ftui::text_area_ex("Operator notes", notes, sizeof(notes), 16, ftui::TextAreaFlags::WordWrap);
+        ft::row({2.0f, 1.2f}, [&]() {
+            ft::log_view("Combined output", output, 16, log_flags);
+            ft::text_area_ex("Operator notes", notes, sizeof(notes), 16, ft::TextAreaFlags::WordWrap);
         });
 
-        ftui::separator();
-        ftui::row(3, [&]() {
-            if (ftui::button("Append sample")) {
+        ft::separator();
+        ft::row(3, [&]() {
+            if (ft::button("Append sample")) {
                 append_event(output, sizeof(output), sources[source_sel], levels[level_sel], "Synthetic event appended from the example toolbar.");
             }
-            if (ftui::button("Append latency warning")) {
+            if (ft::button("Append latency warning")) {
                 append_event(output, sizeof(output), "network", "WARN", "Latency threshold exceeded on the west relay.");
             }
-            if (ftui::button("Clear output")) {
+            if (ft::button("Clear output")) {
                 output[0] = '\0';
                 append_event(output, sizeof(output), "system", "INFO", "Output buffer cleared.");
             }
         });
 
-        ftui::separator();
-        ftui::scroll_area("Incident queue", 200.0f, [&]() {
+        ft::separator();
+        ft::scroll_area("Incident queue", 200.0f, [&]() {
             for (int i = 0; i < (int)(sizeof(incidents) / sizeof(incidents[0])); ++i) {
                 char line[256];
                 snprintf(line, sizeof(line), "%02d  %s", i + 1, incidents[i]);
-                ftui::text(line);
+                ft::text(line);
             }
         });
 
-        ftui::end();
+        ft::end();
     }
 
-    ftui::shutdown();
+    ft::shutdown();
     return 0;
 }

@@ -7,16 +7,16 @@ static const char* kBatteryMaskSvg =
     "<rect x='140' y='24' width='16' height='16' rx='3' ry='3' fill='white'/>"
     "</svg>";
 
-int main() {
-    ftui::Config cfg;
+int main(int argc, char** argv) {
+    ft::Config cfg;
     cfg.title = "FTUI Navigation + Status";
     cfg.width = 1040;
     cfg.height = 720;
-    cfg.backdrop_effect = ftui::BackdropEffect::BayerDither;
+    cfg.backdrop_effect = ft::BackdropEffect::BayerDither;
     cfg.dither_size = 5;
 
-    if (!ftui::create_window(cfg)) return 1;
-    ftui::set_style(ftui::ghostty_green_style());
+    if (!ft::create_window(cfg, argc, argv)) return 1;
+    ft::set_style(ft::ghostty_green_style());
 
     static const char* pages[] = {
         "Dashboard",
@@ -30,60 +30,60 @@ int main() {
     bool relay = true;
     float progress = 0.73f;
 
-    while (ftui::pump()) {
-        ftui::begin();
+    while (ft::pump()) {
+        ft::begin();
 
-        ftui::side_layout(220.0f, [&]() {
-            ftui::side_menu("Navigation", pages, 5, &page);
+        ft::side_layout(220.0f, [&]() {
+            ft::side_menu("Navigation", pages, 5, &page);
 
-            ftui::content([&]() {
+            ft::content([&]() {
                 if (page == 0) {
-                    ftui::text("Dashboard");
-                    ftui::text_wrapped("Side menus are useful when a utility app outgrows a tab strip.");
-                    ftui::progress_bar(progress, "Loading assets");
+                    ft::text("Dashboard");
+                    ft::text_wrapped("Side menus are useful when a utility app outgrows a tab strip.");
+                    ft::progress_bar(progress, "Loading assets");
 
-                    ftui::ProgressStyle battery;
+                    ft::ProgressStyle battery;
                     battery.label = "Battery mask";
                     battery.mask_svg = kBatteryMaskSvg;
                     battery.height = 54.0f;
                     battery.wave_front = true;
                     battery.glint = true;
-                    ftui::progress_bar(progress, battery);
+                    ft::progress_bar(progress, battery);
 
-                    ftui::row(3, [&]() {
-                        if (ftui::button("Saved")) ftui::toast_success("Configuration saved");
-                        if (ftui::button("Warn")) ftui::toast_warning("High CPU usage");
-                        if (ftui::button("Error")) ftui::toast_error("Connection failed");
+                    ft::row(3, [&]() {
+                        if (ft::button("Saved")) ft::toast_success("Configuration saved");
+                        if (ft::button("Warn")) ft::toast_warning("High CPU usage");
+                        if (ft::button("Error")) ft::toast_error("Connection failed");
                     });
                 } else if (page == 1) {
-                    ftui::text("Network");
-                    ftui::checkbox("Relay enabled", &relay);
-                    if (ftui::button("Restart relay")) {
-                        ftui::Toast t;
+                    ft::text("Network");
+                    ft::checkbox("Relay enabled", &relay);
+                    if (ft::button("Restart relay")) {
+                        ft::Toast t;
                         t.message = "Relay restarted";
-                        t.type = ftui::ToastType::Success;
+                        t.type = ft::ToastType::Success;
                         t.duration_ms = 5000;
                         t.dismissible = true;
-                        ftui::toast(t);
+                        ft::toast(t);
                     }
                 } else if (page == 2) {
-                    ftui::text("Services");
-                    ftui::progress_bar(0.42f, "Service rollout");
+                    ft::text("Services");
+                    ft::progress_bar(0.42f, "Service rollout");
                 } else if (page == 3) {
-                    ftui::text("Logs");
-                    if (ftui::button("Refresh logs")) ftui::toast_info("Logs refreshed");
-                    ftui::text_wrapped("Toast calls belong naturally in event handlers, with no user-created manager or container.");
+                    ft::text("Logs");
+                    if (ft::button("Refresh logs")) ft::toast_info("Logs refreshed");
+                    ft::text_wrapped("Toast calls belong naturally in event handlers, with no user-created manager or container.");
                 } else {
-                    ftui::text("Settings");
-                    if (ftui::button("Clear toasts")) ftui::clear_toasts();
-                    ftui::slider_float("Demo progress", &progress, 0.0f, 1.0f);
+                    ft::text("Settings");
+                    if (ft::button("Clear toasts")) ft::clear_toasts();
+                    ft::slider_float("Demo progress", &progress, 0.0f, 1.0f);
                 }
             });
         });
 
-        ftui::end();
+        ft::end();
     }
 
-    ftui::shutdown();
+    ft::shutdown();
     return 0;
 }

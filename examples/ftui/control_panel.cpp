@@ -21,13 +21,13 @@ static void append_line(char* buffer, int cap, const char* line) {
     }
 }
 
-int main() {
-    ftui::Config cfg;
+int main(int argc, char** argv) {
+    ft::Config cfg;
     cfg.title = "FTUI Control Panel";
     cfg.width = 1040;
     cfg.height = 860;
 
-    if (!ftui::create_window(cfg)) return 1;
+    if (!ft::create_window(cfg, argc, argv)) return 1;
 
     char username[64] = "operator";
     char api_token[64] = "";
@@ -52,62 +52,62 @@ int main() {
     int env_sel = 1;
     int role_sel = 1;
 
-    while (ftui::pump()) {
-        ftui::begin();
+    while (ft::pump()) {
+        ft::begin();
 
-        ftui::text("Deployment control panel");
-        ftui::text_wrapped("A settings-heavy utility app can stay direct: a few collapsible sections, a confirmation modal, and read-only activity output without introducing controllers or retained screens.");
-        ftui::separator();
+        ft::text("Deployment control panel");
+        ft::text_wrapped("A settings-heavy utility app can stay direct: a few collapsible sections, a confirmation modal, and read-only activity output without introducing controllers or retained screens.");
+        ft::separator();
 
-        ftui::row({1.15f, 1.0f}, [&]() {
-            ftui::dropdown("Environment", envs, 3, &env_sel, 3);
-            ftui::radio_group("Operator role", roles, 3, &role_sel, 1);
+        ft::row({1.15f, 1.0f}, [&]() {
+            ft::dropdown("Environment", envs, 3, &env_sel, 3);
+            ft::radio_group("Operator role", roles, 3, &role_sel, 1);
         });
 
-        if (ftui::collapsing_header("Connection", &connection_open)) {
-            ftui::row({1.5f, 1.0f}, [&]() {
-                ftui::input("Username", username, sizeof(username));
-                ftui::input("API token", api_token, sizeof(api_token), ftui::InputFlags::Password);
+        if (ft::collapsing_header("Connection", &connection_open)) {
+            ft::row({1.5f, 1.0f}, [&]() {
+                ft::input("Username", username, sizeof(username));
+                ft::input("API token", api_token, sizeof(api_token), ft::InputFlags::Password);
             });
-            ftui::input("Endpoint", endpoint, sizeof(endpoint));
-            ftui::checkbox("Remember session", &remember_session);
+            ft::input("Endpoint", endpoint, sizeof(endpoint));
+            ft::checkbox("Remember session", &remember_session);
         }
 
-        if (ftui::collapsing_header("Automation", &automation_open)) {
-            ftui::checkbox("Dry run", &dry_run);
-            ftui::checkbox("Alert on completion", &alerts_enabled);
-            ftui::text_area_ex("Change summary", notes, sizeof(notes), 8, ftui::TextAreaFlags::WordWrap);
+        if (ft::collapsing_header("Automation", &automation_open)) {
+            ft::checkbox("Dry run", &dry_run);
+            ft::checkbox("Alert on completion", &alerts_enabled);
+            ft::text_area_ex("Change summary", notes, sizeof(notes), 8, ft::TextAreaFlags::WordWrap);
         }
 
-        ftui::separator();
-        ftui::row(3, [&]() {
-            if (ftui::button("Validate")) {
+        ft::separator();
+        ft::row(3, [&]() {
+            if (ft::button("Validate")) {
                 append_line(activity, sizeof(activity), "[Run] Validation completed successfully.");
             }
-            if (ftui::button("Apply")) {
-                ftui::open_modal("Confirm deployment");
+            if (ft::button("Apply")) {
+                ft::open_modal("Confirm deployment");
             }
-            if (ftui::button("Clear summary")) {
+            if (ft::button("Clear summary")) {
                 notes[0] = '\0';
                 append_line(activity, sizeof(activity), "[Run] Summary cleared.");
             }
         });
 
-        ftui::separator();
-        ftui::log_view("Activity", activity, 10,
-                       ftui::LogViewFlags::WordWrap | ftui::LogViewFlags::AutoScrollBottom);
+        ft::separator();
+        ft::log_view("Activity", activity, 10,
+                       ft::LogViewFlags::WordWrap | ft::LogViewFlags::AutoScrollBottom);
 
-        bool confirm_open = ftui::modal("Confirm deployment", [&]() {
-            ftui::text_wrapped("Applying this plan will use the current environment, credentials, and notes exactly as shown in the form.");
-            ftui::separator();
-            ftui::row({1.0f, 1.0f}, [&]() {
-                if (ftui::button("Cancel")) ftui::close_modal();
-                if (ftui::button("Deploy now")) {
+        bool confirm_open = ft::modal("Confirm deployment", [&]() {
+            ft::text_wrapped("Applying this plan will use the current environment, credentials, and notes exactly as shown in the form.");
+            ft::separator();
+            ft::row({1.0f, 1.0f}, [&]() {
+                if (ft::button("Cancel")) ft::close_modal();
+                if (ft::button("Deploy now")) {
                     char line[256];
                     snprintf(line, sizeof(line), "[Deploy] Sent %s run to %s as %s.",
                              dry_run ? "dry" : "live", envs[env_sel], username[0] ? username : "operator");
                     append_line(activity, sizeof(activity), line);
-                    ftui::close_modal();
+                    ft::close_modal();
                 }
             });
         });
@@ -117,9 +117,9 @@ int main() {
         }
         confirm_open_last = confirm_open;
 
-        ftui::end();
+        ft::end();
     }
 
-    ftui::shutdown();
+    ft::shutdown();
     return 0;
 }

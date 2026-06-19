@@ -12169,6 +12169,30 @@ inline ftui::Style to_gui_style(const Style& s) {
     return out;
 }
 
+inline Style from_gui_style(const ftui::Style& s) {
+    Style out;
+    out.background = s.background;
+    out.panel = s.panel;
+    out.text = s.text;
+    out.text_dim = s.text_dim;
+    out.border = s.border;
+    out.button = s.button;
+    out.button_hover = s.button_hover;
+    out.button_active = s.button_active;
+    out.input_bg = s.input_bg;
+    out.input_focus = s.input_focus;
+    out.accent = s.accent;
+    out.warning = s.warning;
+    out.success = s.success;
+    out.window_padding = s.window_padding;
+    out.item_spacing = s.item_spacing;
+    out.item_height = s.item_height;
+    out.rounding = s.rounding;
+    out.border_width = s.border_width;
+    out.font_size = s.font_size;
+    return out;
+}
+
 inline ftht::Style to_web_style(const Style& s) {
     ftht::Style out;
     out.background = to_web(s.background);
@@ -12585,12 +12609,15 @@ inline void set_window_icon_builtin(BuiltinIcon variant = BuiltinIcon::Symbol) {
     else if (detail::render_mode() == Mode::Tui) ftti::set_window_icon_builtin(static_cast<ftti::BuiltinIcon>(static_cast<int>(variant)));
 }
 
-inline Style default_dark_style() { return detail::style_ref(); }
-inline Style one_dark_style() { return detail::style_ref(); }
-inline Style catppuccin_mocha_style() { Style s = detail::style_ref(); s.background = {0.118f, 0.118f, 0.180f, 1.0f}; s.panel = {0.180f, 0.188f, 0.255f, 1.0f}; s.accent = {0.796f, 0.651f, 0.969f, 1.0f}; return s; }
-inline Style nord_style() { Style s = detail::style_ref(); s.background = {0.180f, 0.204f, 0.251f, 1.0f}; s.panel = {0.231f, 0.259f, 0.322f, 1.0f}; s.accent = {0.533f, 0.753f, 0.816f, 1.0f}; return s; }
-inline Style gruvbox_dark_style() { Style s = detail::style_ref(); s.background = {0.157f, 0.157f, 0.133f, 1.0f}; s.panel = {0.196f, 0.188f, 0.157f, 1.0f}; s.accent = {0.510f, 0.647f, 0.596f, 1.0f}; return s; }
-inline Style ghostty_green_style() { Style s = detail::style_ref(); s.background = {0.020f, 0.032f, 0.027f, 1.0f}; s.panel = {0.047f, 0.071f, 0.059f, 1.0f}; s.accent = {0.314f, 0.965f, 0.659f, 1.0f}; return s; }
+inline Style default_dark_style() { return detail::from_gui_style(ftui::default_dark_style()); }
+inline Style catppuccin_mocha_style() { return detail::from_gui_style(ftui::catppuccin_mocha_style()); }
+inline Style nord_style() { return detail::from_gui_style(ftui::nord_style()); }
+inline Style gruvbox_dark_style() { return detail::from_gui_style(ftui::gruvbox_dark_style()); }
+inline Style one_dark_style() { return detail::from_gui_style(ftui::one_dark_style()); }
+inline Style ghostty_green_style() { return detail::from_gui_style(ftui::ghostty_green_style()); }
+inline Style style_from_name(const char* name) { return detail::from_gui_style(ftui::style_from_name(name)); }
+inline const char* style_name(const Style& style) { return ftui::style_name(detail::to_gui_style(style)); }
+inline const char* current_style_name() { return ftui::current_style_name(); }
 
 inline const Style& get_style() {
     return detail::style_ref();

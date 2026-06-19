@@ -30,13 +30,13 @@ static void copy_text(char* buffer, int cap, const char* text) {
     snprintf(buffer, (size_t)cap, "%s", text);
 }
 
-int main() {
-    ftui::Config cfg;
+int main(int argc, char** argv) {
+    ft::Config cfg;
     cfg.title = "FTUI Showcase";
     cfg.width = 1080;
     cfg.height = 920;
 
-    if (!ftui::create_window(cfg)) return 1;
+    if (!ft::create_window(cfg, argc, argv)) return 1;
 
     char username[64] = "operator";
     char password[64] = "";
@@ -80,13 +80,13 @@ int main() {
     static const char* icon_names[] = {
         "Symbol", "Symbol + text"
     };
-    static ftui::Style (*theme_fns[])() = {
-        ftui::default_dark_style,
-        ftui::catppuccin_mocha_style,
-        ftui::nord_style,
-        ftui::gruvbox_dark_style,
-        ftui::one_dark_style,
-        ftui::ghostty_green_style,
+    static ft::Style (*theme_fns[])() = {
+        ft::default_dark_style,
+        ft::catppuccin_mocha_style,
+        ft::nord_style,
+        ft::gruvbox_dark_style,
+        ft::one_dark_style,
+        ft::ghostty_green_style,
     };
 
     int env_sel = 1;
@@ -96,7 +96,7 @@ int main() {
     int icon_idx = 0;
     int transparency_idx = 0;
     for (int i = 0; i < 6; ++i) {
-        if (strcmp(theme_keys[i], ftui::current_style_name()) == 0) {
+        if (strcmp(theme_keys[i], ft::current_style_name()) == 0) {
             theme_idx = i;
             break;
         }
@@ -128,281 +128,281 @@ int main() {
         "Modal blocked background interaction correctly."
     };
 
-    while (ftui::pump()) {
-        ftui::begin();
+    while (ft::pump()) {
+        ft::begin();
 
-        ftui::text("FTUI showcase");
-        ftui::text_wrapped(
+        ft::text("FTUI showcase");
+        ft::text_wrapped(
             "Tiny immediate-mode GUI for utility apps. This demo focuses on the higher-value widgets "
             "and layout helpers while keeping the basic flow the same: begin, draw widgets, end.");
-        ftui::separator();
+        ft::separator();
 
-        ftui::side_menu_drawer("Feature menu", side_pages, 3, &side_page, 240.0f);
+        ft::side_menu_drawer("Feature menu", side_pages, 3, &side_page, 240.0f);
         if (side_page == 0) {
-            ftui::text("Side menu navigation");
-            ftui::text_wrapped("The drawer-style side menu is a denser navigation option for utility apps that have grown past a small tab strip.");
-            ftui::progress_bar(transfer_progress, "Inline status");
+            ft::text("Side menu navigation");
+            ft::text_wrapped("The drawer-style side menu is a denser navigation option for utility apps that have grown past a small tab strip.");
+            ft::progress_bar(transfer_progress, "Inline status");
         } else if (side_page == 1) {
-            ftui::text("Toast notifications");
-            ftui::row(4, [&]() {
-                if (ftui::button("Info")) ftui::toast_info("Background sync complete");
-                if (ftui::button("Saved")) ftui::toast_success("Configuration saved");
-                if (ftui::button("Warn")) ftui::toast_warning("High CPU usage");
-                if (ftui::button("Error")) ftui::toast_error("Connection failed");
+            ft::text("Toast notifications");
+            ft::row(4, [&]() {
+                if (ft::button("Info")) ft::toast_info("Background sync complete");
+                if (ft::button("Saved")) ft::toast_success("Configuration saved");
+                if (ft::button("Warn")) ft::toast_warning("High CPU usage");
+                if (ft::button("Error")) ft::toast_error("Connection failed");
             });
         } else {
-            ftui::text("Masked progress");
-            ftui::ProgressStyle battery;
+            ft::text("Masked progress");
+            ft::ProgressStyle battery;
             battery.label = "Embedded SVG mask";
             battery.mask_svg = embedded_battery_svg;
             battery.height = 52.0f;
             battery.wave_front = true;
             battery.glint = true;
-            ftui::progress_bar(transfer_progress, battery);
+            ft::progress_bar(transfer_progress, battery);
 
-            ftui::ProgressStyle png_mask;
+            ft::ProgressStyle png_mask;
             png_mask.label = "PNG mask";
             png_mask.mask_path = "probar.png";
             png_mask.height = 52.0f;
             png_mask.wave_front = true;
             png_mask.glint = true;
-            ftui::progress_bar(transfer_progress, png_mask);
+            ft::progress_bar(transfer_progress, png_mask);
 
-            ftui::ProgressStyle pill;
+            ft::ProgressStyle pill;
             pill.label = "Built-in pill mask";
             pill.mask_shape = "pill";
             pill.height = 42.0f;
             pill.glint = true;
-            ftui::progress_bar(transfer_progress, pill);
+            ft::progress_bar(transfer_progress, pill);
 
-            ftui::slider_float("Progress", &transfer_progress, 0.0f, 1.0f);
+            ft::slider_float("Progress", &transfer_progress, 0.0f, 1.0f);
         }
 
-        ftui::separator();
+        ft::separator();
 
-        ftui::tabs(tabs, 3, &tab_sel);
-        ftui::separator();
+        ft::tabs(tabs, 3, &tab_sel);
+        ft::separator();
 
         if (tab_sel == 0) {
-            ftui::text_wrapped("Core form widgets stay compact, but you can now layer in pickers, layout hints, tooltips, and disabled scopes without changing the basic pattern.");
-            ftui::separator();
+            ft::text_wrapped("Core form widgets stay compact, but you can now layer in pickers, layout hints, tooltips, and disabled scopes without changing the basic pattern.");
+            ft::separator();
 
-            ftui::row({2.0f, 1.0f}, [&]() {
-                ftui::input("Username", username, sizeof(username));
-                ftui::tooltip("Single-line input with the original simple call shape.");
+            ft::row({2.0f, 1.0f}, [&]() {
+                ft::input("Username", username, sizeof(username));
+                ft::tooltip("Single-line input with the original simple call shape.");
 
-                ftui::input("Port", port, sizeof(port), ftui::InputFlags::CharsDecimal);
-                ftui::tooltip("This field uses decimal-only filtering.");
+                ft::input("Port", port, sizeof(port), ft::InputFlags::CharsDecimal);
+                ft::tooltip("This field uses decimal-only filtering.");
             });
 
-            ftui::row({2.0f, 1.0f}, [&]() {
-                ftui::input("Password", password, sizeof(password), ftui::InputFlags::Password);
-                ftui::tooltip("Password masking still uses the same input widget.");
+            ft::row({2.0f, 1.0f}, [&]() {
+                ft::input("Password", password, sizeof(password), ft::InputFlags::Password);
+                ft::tooltip("Password masking still uses the same input widget.");
 
-                ftui::input("Access code", access_code, sizeof(access_code),
-                            ftui::InputFlags::CharsUppercase | ftui::InputFlags::CharsNoBlank);
-                ftui::tooltip("Uppercase plus no-blank filtering is additive.");
+                ft::input("Access code", access_code, sizeof(access_code),
+                            ft::InputFlags::CharsUppercase | ft::InputFlags::CharsNoBlank);
+                ft::tooltip("Uppercase plus no-blank filtering is additive.");
             });
 
-            ftui::row(2, [&]() {
-                if (ftui::button("Sign in")) {
+            ft::row(2, [&]() {
+                if (ft::button("Sign in")) {
                     click_count++;
                     append_line(logs, sizeof(logs), "[Workspace] Sign in requested.");
                 }
-                ftui::tooltip("Buttons support hover, press, disabled, and keyboard activation.");
+                ft::tooltip("Buttons support hover, press, disabled, and keyboard activation.");
 
-                if (ftui::button("Focus username")) {
-                    ftui::request_focus("Username");
+                if (ft::button("Focus username")) {
+                    ft::request_focus("Username");
                 }
             });
 
-            ftui::row({1.3f, 1.0f}, [&]() {
-                ftui::listbox("Profile", profile_items, 4, &profile_sel, 4);
-                ftui::tooltip("Listboxes are explicit always-visible pickers.");
+            ft::row({1.3f, 1.0f}, [&]() {
+                ft::listbox("Profile", profile_items, 4, &profile_sel, 4);
+                ft::tooltip("Listboxes are explicit always-visible pickers.");
 
-                ftui::radio_group("Shell", shell_items, 3, &shell_sel, 1);
-                ftui::tooltip("Radio groups use arrow-key navigation when focused.");
+                ft::radio_group("Shell", shell_items, 3, &shell_sel, 1);
+                ft::tooltip("Radio groups use arrow-key navigation when focused.");
             });
 
-            ftui::separator();
-            ftui::checkbox("Enable safe mode", &safe_mode);
-            ftui::tooltip("Checkboxes now use a filled square instead of a checkmark.");
-            ftui::slider_float("Blend", &blend, 0.0f, 1.0f);
-            ftui::tooltip("Sliders also participate in the shared focus and disabled state path.");
+            ft::separator();
+            ft::checkbox("Enable safe mode", &safe_mode);
+            ft::tooltip("Checkboxes now use a filled square instead of a checkmark.");
+            ft::slider_float("Blend", &blend, 0.0f, 1.0f);
+            ft::tooltip("Sliders also participate in the shared focus and disabled state path.");
 
-            ftui::begin_disabled();
+            ft::begin_disabled();
             if (!advanced_enabled) {
-                ftui::button("Disabled action");
-                ftui::tooltip("Scoped disabled state dims visuals and suppresses interaction.");
+                ft::button("Disabled action");
+                ft::tooltip("Scoped disabled state dims visuals and suppresses interaction.");
             }
-            ftui::end_disabled();
+            ft::end_disabled();
 
-            ftui::row(2, [&]() {
-                if (ftui::button("Toggle advanced")) advanced_enabled = !advanced_enabled;
-                if (ftui::button("Open child window")) {
-                    ftui::Config child;
+            ft::row(2, [&]() {
+                if (ft::button("Toggle advanced")) advanced_enabled = !advanced_enabled;
+                if (ft::button("Open child window")) {
+                    ft::Config child;
                     child.title = "FTUI Child";
                     child.width = 520;
                     child.height = 260;
                     child.center_window = true;
-                    ftui::open_child_window(child, [&]() {
-                        ftui::text("Child windows inherit the same API.");
-                        ftui::text_wrapped("This is still immediate mode. There is no extra controller layer for nested windows.");
-                        ftui::separator();
+                    ft::open_child_window(child, [&]() {
+                        ft::text("Child windows inherit the same API.");
+                        ft::text_wrapped("This is still immediate mode. There is no extra controller layer for nested windows.");
+                        ft::separator();
                         static bool child_flag = true;
                         static float child_mix = 0.35f;
-                        ftui::checkbox("Keep child updates live", &child_flag);
-                        ftui::slider_float("Mix", &child_mix, 0.0f, 1.0f);
+                        ft::checkbox("Keep child updates live", &child_flag);
+                        ft::slider_float("Mix", &child_mix, 0.0f, 1.0f);
                     });
                 }
             });
         } else if (tab_sel == 1) {
-            ftui::row({3.0f, 2.0f}, [&]() {
-                ftui::text_area_ex("Editor##main", editor, sizeof(editor), 10, ftui::TextAreaFlags::WordWrap);
-                ftui::tooltip("Editable multiline input with optional word wrap.");
+            ft::row({3.0f, 2.0f}, [&]() {
+                ft::text_area_ex("Editor##main", editor, sizeof(editor), 10, ft::TextAreaFlags::WordWrap);
+                ft::tooltip("Editable multiline input with optional word wrap.");
 
-                ftui::log_view("Output##log", logs, 10, ftui::LogViewFlags::WordWrap | ftui::LogViewFlags::AutoScrollBottom);
-                ftui::tooltip("Read-only log view supports selection, copy, wrapping, and scrolling.");
+                ft::log_view("Output##log", logs, 10, ft::LogViewFlags::WordWrap | ft::LogViewFlags::AutoScrollBottom);
+                ft::tooltip("Read-only log view supports selection, copy, wrapping, and scrolling.");
             });
 
-            ftui::separator();
-            if (ftui::button("Append log line")) {
+            ft::separator();
+            if (ft::button("Append log line")) {
                 append_line(logs, sizeof(logs), "[Logs] Manual line appended.");
             }
-            ftui::tooltip("Useful for transcripts, debug output, and runtime status.");
+            ft::tooltip("Useful for transcripts, debug output, and runtime status.");
 
-            ftui::separator();
-            ftui::scroll_area("History", 220.0f, [&]() {
+            ft::separator();
+            ft::scroll_area("History", 220.0f, [&]() {
                 for (int i = 0; i < (int)(sizeof(history_lines) / sizeof(history_lines[0])); ++i) {
                     char line[256];
                     snprintf(line, sizeof(line), "%02d  %s", i + 1, history_lines[i]);
-                    ftui::text(line);
+                    ft::text(line);
                 }
             });
-            ftui::tooltip("Nested scroll areas consume wheel input before the outer window.");
+            ft::tooltip("Nested scroll areas consume wheel input before the outer window.");
         } else {
-            ftui::text_wrapped("Collapsible sections, one-shot layout hints, modals, and theme switching are meant to stay opt-in. If you do not call them, the basic API does not get more complicated.");
-            ftui::separator();
+            ft::text_wrapped("Collapsible sections, one-shot layout hints, modals, and theme switching are meant to stay opt-in. If you do not call them, the basic API does not get more complicated.");
+            ft::separator();
 
-            if (ftui::collapsing_header("General##settings", &general_open)) {
-                ftui::checkbox("Enable advanced controls", &advanced_enabled);
-                ftui::text("Current environment");
-                ftui::text(env_items[env_sel]);
-                ftui::set_next_width(220.0f);
-                ftui::button("Fixed width example");
-                ftui::set_next_fill();
-                ftui::button("Fill width example");
+            if (ft::collapsing_header("General##settings", &general_open)) {
+                ft::checkbox("Enable advanced controls", &advanced_enabled);
+                ft::text("Current environment");
+                ft::text(env_items[env_sel]);
+                ft::set_next_width(220.0f);
+                ft::button("Fixed width example");
+                ft::set_next_fill();
+                ft::button("Fill width example");
             }
 
-            if (ftui::collapsing_header("Layout helpers##settings", &layout_open)) {
-                ftui::text("Percent width");
-                ftui::set_next_percent(0.55f);
-                ftui::button("55% width");
-                ftui::text("Clamped width");
-                ftui::set_next_percent(0.75f);
-                ftui::set_next_limits(180.0f, 280.0f);
-                ftui::set_next_align(ftui::Align::End);
-                ftui::button("Aligned and clamped");
-                ftui::row({2.0f, 1.0f}, [&]() {
-                    ftui::button("Wide cell");
-                    ftui::button("Narrow cell");
+            if (ft::collapsing_header("Layout helpers##settings", &layout_open)) {
+                ft::text("Percent width");
+                ft::set_next_percent(0.55f);
+                ft::button("55% width");
+                ft::text("Clamped width");
+                ft::set_next_percent(0.75f);
+                ft::set_next_limits(180.0f, 280.0f);
+                ft::set_next_align(ft::Align::End);
+                ft::button("Aligned and clamped");
+                ft::row({2.0f, 1.0f}, [&]() {
+                    ft::button("Wide cell");
+                    ft::button("Narrow cell");
                 });
             }
 
-            if (ftui::collapsing_header("Color showcase##settings", &color_open)) {
-                ftui::text_wrapped(
+            if (ft::collapsing_header("Color showcase##settings", &color_open)) {
+                ft::text_wrapped(
                     "Theme presets now expose semantic accent, warning, and success colors. "
                     "You can also use one-shot or scoped hex overrides without changing the surrounding style.");
 
-                ftui::row(3, [&]() {
-                    ftui::button("Accent", ftui::ColorRole::Accent);
-                    ftui::button("Warning", ftui::ColorRole::Warning);
-                    ftui::button("Success", ftui::ColorRole::Success);
+                ft::row(3, [&]() {
+                    ft::button("Accent", ft::ColorRole::Accent);
+                    ft::button("Warning", ft::ColorRole::Warning);
+                    ft::button("Success", ft::ColorRole::Success);
                 });
 
-                ftui::row(2, [&]() {
-                    ftui::set_next_color(ftui::ColorRole::Button, ftui::color_from_hex("#c93c3c"));
-                    ftui::set_next_color(ftui::ColorRole::Text, ftui::color_from_hex("#fff5f5"));
-                    ftui::button("One-shot hex");
+                ft::row(2, [&]() {
+                    ft::set_next_color(ft::ColorRole::Button, ft::color_from_hex("#c93c3c"));
+                    ft::set_next_color(ft::ColorRole::Text, ft::color_from_hex("#fff5f5"));
+                    ft::button("One-shot hex");
 
-                    ftui::button("Direct tint", ftui::color_from_hex("#7c3aed"));
+                    ft::button("Direct tint", ft::color_from_hex("#7c3aed"));
                 });
 
-                ftui::push_color(ftui::ColorRole::Button, ftui::color_from_hex("#2f855a"));
-                ftui::push_color(ftui::ColorRole::Text, ftui::color_from_hex("#f7fff9"));
-                ftui::row(2, [&]() {
-                    ftui::button("Scoped green A");
-                    ftui::button("Scoped green B");
+                ft::push_color(ft::ColorRole::Button, ft::color_from_hex("#2f855a"));
+                ft::push_color(ft::ColorRole::Text, ft::color_from_hex("#f7fff9"));
+                ft::row(2, [&]() {
+                    ft::button("Scoped green A");
+                    ft::button("Scoped green B");
                 });
-                ftui::pop_color();
-                ftui::pop_color();
+                ft::pop_color();
+                ft::pop_color();
             }
 
-            ftui::separator();
-            if (ftui::button("Reset session")) {
-                ftui::open_modal("Reset confirmation");
+            ft::separator();
+            if (ft::button("Reset session")) {
+                ft::open_modal("Reset confirmation");
             }
         }
 
-        ftui::separator();
-        ftui::row(3, [&]() {
-            if (ftui::button("Toggle rects")) ftui::debug().show_layout_rects ^= true;
-            if (ftui::button("Toggle IDs")) {
-                ftui::debug().show_hovered_id ^= true;
-                ftui::debug().show_active_id ^= true;
+        ft::separator();
+        ft::row(3, [&]() {
+            if (ft::button("Toggle rects")) ft::debug().show_layout_rects ^= true;
+            if (ft::button("Toggle IDs")) {
+                ft::debug().show_hovered_id ^= true;
+                ft::debug().show_active_id ^= true;
             }
-            if (ftui::button("Toggle FPS")) ftui::debug().show_fps ^= true;
+            if (ft::button("Toggle FPS")) ft::debug().show_fps ^= true;
         });
 
-        ftui::separator();
+        ft::separator();
         char summary[256];
         snprintf(summary, sizeof(summary),
                  "Clicks: %d   safe mode: %s   blend: %.2f   shell: %s",
                  click_count, safe_mode ? "on" : "off", blend, shell_items[shell_sel]);
-        ftui::text(summary);
+        ft::text(summary);
 
         for (int i = 0; i < 6; ++i) {
-            if (strcmp(theme_keys[i], ftui::current_style_name()) == 0) {
+            if (strcmp(theme_keys[i], ft::current_style_name()) == 0) {
                 theme_idx = i;
                 break;
             }
         }
-        if (ftui::dropdown("Theme", theme_names, 6, &theme_idx, 6)) {
-            ftui::set_style(theme_fns[theme_idx]());
+        if (ft::dropdown("Theme", theme_names, 6, &theme_idx, 6)) {
+            ft::set_style(theme_fns[theme_idx]());
             append_line(logs, sizeof(logs), "[Settings] Theme changed.");
         }
-        ftui::tooltip("Dropdowns are opt-in single-call pickers.");
+        ft::tooltip("Dropdowns are opt-in single-call pickers.");
 
-        if (ftui::dropdown("Window transparency", transparency_names, 4, &transparency_idx, 4)) {
-            ftui::WindowTransparency mode = ftui::WindowTransparency::Opaque;
-            if (transparency_idx == 1) mode = ftui::WindowTransparency::Plain;
-            else if (transparency_idx == 2) mode = ftui::WindowTransparency::BayerDither;
-            else if (transparency_idx == 3) mode = ftui::WindowTransparency::Blur;
-            ftui::set_window_transparency(mode);
+        if (ft::dropdown("Window transparency", transparency_names, 4, &transparency_idx, 4)) {
+            ft::WindowTransparency mode = ft::WindowTransparency::Opaque;
+            if (transparency_idx == 1) mode = ft::WindowTransparency::Plain;
+            else if (transparency_idx == 2) mode = ft::WindowTransparency::BayerDither;
+            else if (transparency_idx == 3) mode = ft::WindowTransparency::Blur;
+            ft::set_window_transparency(mode);
             append_line(logs, sizeof(logs), "[Settings] Window transparency changed.");
         }
-        ftui::row(2, [&]() {
-            if (ftui::slider_float("Window opacity", &window_opacity, 0.25f, 1.0f)) {
-                ftui::set_window_opacity(window_opacity);
+        ft::row(2, [&]() {
+            if (ft::slider_float("Window opacity", &window_opacity, 0.25f, 1.0f)) {
+                ft::set_window_opacity(window_opacity);
             }
-            if (ftui::slider_float("Dither motif size", &dither_size, 1.0f, 16.0f)) {
-                ftui::set_dither_size((int)(dither_size + 0.5f));
+            if (ft::slider_float("Dither motif size", &dither_size, 1.0f, 16.0f)) {
+                ft::set_dither_size((int)(dither_size + 0.5f));
             }
         });
 
-        if (ftui::dropdown("Window icon", icon_names, 2, &icon_idx, 2)) {
-            ftui::set_window_icon_builtin(icon_idx == 0
-                ? ftui::BuiltinIcon::Symbol
-                : ftui::BuiltinIcon::SymbolWithText);
+        if (ft::dropdown("Window icon", icon_names, 2, &icon_idx, 2)) {
+            ft::set_window_icon_builtin(icon_idx == 0
+                ? ft::BuiltinIcon::Symbol
+                : ft::BuiltinIcon::SymbolWithText);
             append_line(logs, sizeof(logs), "[Settings] Window icon changed.");
         }
 
-        bool modal_open = ftui::modal("Reset confirmation", [&]() {
-            ftui::text_wrapped("This lightweight modal blocks background widgets until you close it. It is still immediate mode: just call ftui::modal() and draw inside it.");
-            ftui::separator();
-            ftui::row({1.0f, 1.0f}, [&]() {
-                if (ftui::button("Cancel")) ftui::close_modal();
-                if (ftui::button("Reset now")) {
+        bool modal_open = ft::modal("Reset confirmation", [&]() {
+            ft::text_wrapped("This lightweight modal blocks background widgets until you close it. It is still immediate mode: just call ft::modal() and draw inside it.");
+            ft::separator();
+            ft::row({1.0f, 1.0f}, [&]() {
+                if (ft::button("Cancel")) ft::close_modal();
+                if (ft::button("Reset now")) {
                     username[0] = '\0';
                     password[0] = '\0';
                     copy_text(port, sizeof(port), "8080");
@@ -412,7 +412,7 @@ int main() {
                     click_count = 0;
                     safe_mode = false;
                     blend = 0.45f;
-                    ftui::close_modal();
+                    ft::close_modal();
                 }
             });
         });
@@ -421,9 +421,9 @@ int main() {
         }
         modal_was_open = modal_open;
 
-        ftui::end();
+        ft::end();
     }
 
-    ftui::shutdown();
+    ft::shutdown();
     return 0;
 }

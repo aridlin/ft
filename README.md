@@ -62,6 +62,25 @@ Linux:
 c++ examples/ft_combined_smoke.cpp -o build/ft_combined_smoke -std=c++17 $(pkg-config --cflags --libs cairo x11) -pthread
 ```
 
+Build every bundled demo:
+
+```bash
+sh scripts/build_demos.sh
+```
+
+Bundled demos:
+
+- `examples/ftui/showcase.cpp`
+- `examples/ftui/control_panel.cpp`
+- `examples/ftui/log_viewer.cpp`
+- `examples/ftui/benchmark.cpp`
+- `examples/ftui/navigation_status.cpp`
+- `examples/ftht/http_showcase.cpp`
+- `examples/ftht/device_panel.cpp`
+- `examples/ftht/login_form_demo.cpp`
+- `examples/ftht/login_draw_demo.cpp`
+- `examples/ftht/compile_overwatch.cpp`
+
 Windows with MSVC:
 
 ```bat

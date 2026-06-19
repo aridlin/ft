@@ -12485,7 +12485,7 @@ inline void begin() {
         ftui::begin();
         ftui::set_next_width(42.0f);
         ftui::set_next_align(ftui::Align::Center);
-        if (ftui::button("●", ftui::ColorRole::Warning)) detail::stop_webserver_internal();
+        if (ftui::button("O", ftui::ColorRole::Warning)) detail::stop_webserver_internal();
         ftui::tooltip(ftht::url());
         return;
     }
@@ -12710,7 +12710,7 @@ inline bool button(const char* label, Color color) {
     return false;
 }
 
-inline bool webserver_button(const char* start_label = "○") {
+inline bool webserver_button(const char* start_label = "O") {
     if (webserver_running()) return false;
     Mode mode = detail::render_mode();
     bool clicked = false;

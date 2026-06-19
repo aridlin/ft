@@ -1,0 +1,9 @@
+build/
+
+# Source snapshots used while building the combined header.
+ftui.hpp
+ftti.hpp
+ftht.hpp
+ftuiREADME.md
+fttiREADME.md
+fthtREADME.md

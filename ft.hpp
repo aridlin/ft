@@ -12054,6 +12054,34 @@ inline DebugState& fallback_debug_ref() {
     return value;
 }
 
+inline std::string shell_quote(const char* value) {
+    std::string out = "'";
+    for (const char* p = value ? value : ""; *p; ++p) {
+        if (*p == '\'') out += "'\\''";
+        else out += *p;
+    }
+    out += "'";
+    return out;
+}
+
+inline void open_url_in_browser(const char* url) {
+    if (!url || !*url) return;
+#if defined(_WIN32)
+    std::string cmd = "start \"\" \"";
+    for (const char* p = url; *p; ++p) {
+        if (*p != '"') cmd += *p;
+    }
+    cmd += "\"";
+    std::system(cmd.c_str());
+#elif defined(__APPLE__)
+    std::string cmd = "open " + shell_quote(url) + " >/dev/null 2>&1 &";
+    std::system(cmd.c_str());
+#else
+    std::string cmd = "xdg-open " + shell_quote(url) + " >/dev/null 2>&1 &";
+    std::system(cmd.c_str());
+#endif
+}
+
 inline bool user_widgets_suppressed() {
     FrameTarget target = frame_target_ref();
     return target == FrameTarget::GuiWebControl || target == FrameTarget::TuiWebControl;
@@ -12330,8 +12358,9 @@ inline bool start_webserver_internal() {
     if (!ftht::create_server(to_web_config(active_config_ref()))) return false;
     webserver_active_ref() = true;
     frame_target_ref() = FrameTarget::Normal;
+    open_url_in_browser(ftht::url());
     if (active_mode_ref() == Mode::Gui) {
-        ftui::set_window_size(260, 120);
+        ftui::set_window_size(86, 76);
         ftui::request_redraw();
     } else if (active_mode_ref() == Mode::Tui) {
         ftti::request_redraw();
@@ -12454,9 +12483,10 @@ inline void begin() {
     }
     if (target == detail::FrameTarget::GuiWebControl) {
         ftui::begin();
-        ftui::text("Web server running");
-        ftui::text_wrapped(ftht::url());
-        if (ftui::button("Stop web server", ftui::ColorRole::Warning)) detail::stop_webserver_internal();
+        ftui::set_next_width(42.0f);
+        ftui::set_next_align(ftui::Align::Center);
+        if (ftui::button("●", ftui::ColorRole::Warning)) detail::stop_webserver_internal();
+        ftui::tooltip(ftht::url());
         return;
     }
     if (target == detail::FrameTarget::TuiWebControl) {
@@ -12680,12 +12710,24 @@ inline bool button(const char* label, Color color) {
     return false;
 }
 
-inline bool webserver_button(const char* start_label = "Start web server") {
+inline bool webserver_button(const char* start_label = "○") {
     if (webserver_running()) return false;
-    if (::ft::button(start_label, ColorRole::Accent)) {
-        return start_webserver();
+    Mode mode = detail::render_mode();
+    bool clicked = false;
+    if (mode == Mode::Gui) {
+        ftui::set_next_width(42.0f);
+        ftui::set_next_align(ftui::Align::End);
+        clicked = ftui::button(start_label, ftui::ColorRole::Accent);
+        ftui::tooltip("Start web server");
+    } else if (mode == Mode::Tui) {
+        ftti::set_next_width(4.0f);
+        ftti::set_next_align(ftti::Align::End);
+        clicked = ftti::button(start_label, ftti::ColorRole::Accent);
+        ftti::tooltip("Start web server");
+    } else if (mode == Mode::Web) {
+        return false;
     }
-    return false;
+    return clicked ? start_webserver() : false;
 }
 
 inline bool dropdown(const char* label, const char* const* items, int count, int* selected, int popup_rows = 8) {

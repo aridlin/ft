@@ -62,7 +62,7 @@ Apps launched through `ft::create_window()` can expose the same immediate-mode U
 ft::webserver_button();
 ```
 
-When clicked from GUI mode, FT starts the FTHT server using the `web_*` fields from `ft::Config`, shrinks the native window to a small stop-control view, and serves browser requests through the same `ft::` widget calls. The stop-control window only shows the server URL and a stop button.
+By default this draws a small top-right square button with a circle icon. When clicked from GUI mode, FT starts the FTHT server using the `web_*` fields from `ft::Config`, opens the URL in the browser, shrinks the native window to an icon-only stop control, and serves browser requests through the same `ft::` widget calls. While hosting, the normal widgets disappear from the native window until the stop button is clicked.
 
 If the app does not include `ft::webserver_button()`, the built-in command line can do the same thing:
 

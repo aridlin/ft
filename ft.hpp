@@ -521,7 +521,7 @@ struct UIContext {
     bool last_item_focused = false;
 };
 
-struct CmdState { bool active = false; char buf[16] = {}; int len = 0; };
+struct CmdState { bool active = false; char buf[64] = {}; int len = 0; };
 
 struct MotionSlot {
     int   key = 0;
@@ -766,6 +766,8 @@ static bool        load_mask_from_image(const char* path, MaskData& out);
 static void        draw_toast_overlay();
 static void        draw_side_drawer_overlay(int window_w, int window_h);
 static void        draw_command_overlay(int window_w, int window_h);
+static const char* gui_command_completion(const char* prefix);
+static const char* gui_command_hint(const char* prefix);
 static bool        toasts_active();
 static void        draw_dither_backdrop_panel(Rect r, float opacity);
 static void        draw_dither_pattern(Rect r, float opacity);
@@ -1380,16 +1382,22 @@ static void draw_side_drawer_overlay(int window_w, int window_h) {
 static void draw_command_overlay(int window_w, int window_h) {
     if (!g_cmd.active) return;
 
-    char cmd[32];
-    snprintf(cmd, sizeof(cmd), ":%s_", g_cmd.buf);
-    const char* hint = ":td :fps60 :fx :df :dit :q";
+    char cmd[96];
+    snprintf(cmd, sizeof(cmd), ":%s", g_cmd.buf);
+    const char* completion = gui_command_completion(g_cmd.buf);
+    const char* suffix = "";
+    if (completion && strncmp(completion, g_cmd.buf, strlen(g_cmd.buf)) == 0) {
+        suffix = completion + strlen(g_cmd.buf);
+    }
+    const char* hint = gui_command_hint(g_cmd.buf);
     float lh = text_line_height();
     float pad_x = 12.0f;
     float pad_y = 8.0f;
     float cmd_w = measure_text_width(cmd);
+    float suffix_w = measure_text_width(suffix);
     float hint_w = measure_text_width(hint);
     float max_w = fmaxf(220.0f, (float)window_w - g_style.window_padding * 2.0f);
-    float w = fminf(max_w, fmaxf(280.0f, cmd_w + hint_w + pad_x * 4.0f + 12.0f));
+    float w = fminf(max_w, fmaxf(280.0f, cmd_w + suffix_w + hint_w + pad_x * 4.0f + 12.0f));
     float h = lh + pad_y * 2.0f;
     Rect r = {g_style.window_padding, (float)window_h - g_style.window_padding - h, w, h};
 
@@ -1400,8 +1408,12 @@ static void draw_command_overlay(int window_w, int window_h) {
     draw_widget_chrome(r, fmaxf(6.0f, g_style.rounding), bg, border, 0.0f, 0.0f, 1.0f);
     fill_round_rect({r.x + 7.0f, r.y + 7.0f, 4.0f, r.h - 14.0f}, 2.0f, accent);
 
-    Rect cmd_r = {r.x + pad_x + 10.0f, r.y + pad_y, cmd_w + 16.0f, lh};
+    Rect cmd_r = {r.x + pad_x + 10.0f, r.y + pad_y, cmd_w + 4.0f, lh};
     draw_text_utf8(cmd, cmd_r, resolve_color(ColorRole::Text));
+    if (suffix && suffix[0]) {
+        Rect suffix_r = {cmd_r.x + cmd_w, r.y + pad_y, suffix_w + 4.0f, lh};
+        draw_text_utf8(suffix, suffix_r, resolve_color(ColorRole::TextDim));
+    }
 
     Rect hint_r = {r.x + r.w - hint_w - pad_x, r.y + pad_y, hint_w, lh};
     draw_text_utf8(hint, hint_r, resolve_color(ColorRole::TextDim));
@@ -1630,6 +1642,79 @@ static Rect next_rect(float height) {
 }
 
 static void cmd_clear() { g_cmd.active = false; g_cmd.len = 0; g_cmd.buf[0] = '\0'; }
+
+struct GuiCommandSpec {
+    const char* command;
+    const char* hint;
+};
+
+static const GuiCommandSpec k_gui_commands[] = {
+    {"q", "quit"},
+    {"quit", "quit"},
+    {"td", "default dark"},
+    {"tc", "catppuccin"},
+    {"tn", "nord"},
+    {"tg", "gruvbox"},
+    {"to", "one dark"},
+    {"th", "ghostty green"},
+    {"fps60", "set fps"},
+    {"fps30", "set fps"},
+    {"ds4", "dither size"},
+    {"op90", "opacity"},
+    {"df", "toggle fps"},
+    {"dl", "layout rects"},
+    {"di", "debug ids"},
+    {"dw", "widget log"},
+    {"fx", "toggle effects"},
+    {"fx0", "effects off"},
+    {"fx1", "effects on"},
+    {"rr", "redraw"},
+    {"ct", "clear toasts"},
+    {"blur", "blur window"},
+    {"dit", "dither window"},
+    {"dither", "dither window"},
+    {"plain", "plain transparency"},
+    {"opaque", "opaque window"},
+    {"bb", "blur backdrop"},
+    {"bd", "dither backdrop"},
+    {"web", "web server"},
+    {"ws", "web server"},
+    {"server", "web server"},
+    {"webserver", "web server"},
+};
+
+static const char* gui_command_completion(const char* prefix) {
+    if (!prefix || !*prefix) return "";
+    const char* best = "";
+    size_t prefix_len = strlen(prefix);
+    for (const GuiCommandSpec& spec : k_gui_commands) {
+        if (strncmp(spec.command, prefix, prefix_len) == 0) {
+            if (!*best || strlen(spec.command) < strlen(best)) best = spec.command;
+        }
+    }
+    return best;
+}
+
+static const char* gui_command_hint(const char* prefix) {
+    if (!prefix || !*prefix) return "tab complete  enter run  esc cancel";
+    for (const GuiCommandSpec& spec : k_gui_commands) {
+        if (strcmp(spec.command, prefix) == 0) return spec.hint;
+    }
+    const char* completion = gui_command_completion(prefix);
+    if (completion && *completion) {
+        for (const GuiCommandSpec& spec : k_gui_commands) {
+            if (strcmp(spec.command, completion) == 0) return spec.hint;
+        }
+    }
+    return "tab complete  enter run  esc cancel";
+}
+
+static void gui_command_accept_completion() {
+    const char* completion = gui_command_completion(g_cmd.buf);
+    if (!completion || !*completion) return;
+    snprintf(g_cmd.buf, sizeof(g_cmd.buf), "%s", completion);
+    g_cmd.len = (int)strlen(g_cmd.buf);
+}
 
 static void set_theme_env(const char* name) {
     if (!name || !name[0]) return;
@@ -3088,7 +3173,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (wc==L'\b'){if(g_cmd.len>0)g_cmd.buf[--g_cmd.len]='\0';}
             else if(wc==L'\r'||wc==L'\n') execute_command();
             else if(wc==27) cmd_clear();
-            else if(wc>=32&&g_cmd.len<15){g_cmd.buf[g_cmd.len++]=(char)wc;g_cmd.buf[g_cmd.len]='\0';}
+            else if(wc>=32&&g_cmd.len<(int)sizeof(g_cmd.buf)-1){g_cmd.buf[g_cmd.len++]=(char)wc;g_cmd.buf[g_cmd.len]='\0';}
             return 0;
         }
         if (wc==L'\b') g_input.key_backspace=true;
@@ -3102,7 +3187,11 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_KEYDOWN:
         g_input.shift_held=(GetKeyState(VK_SHIFT)&0x8000)!=0;
         g_input.ctrl_held=(GetKeyState(VK_CONTROL)&0x8000)!=0;
-        if (g_cmd.active){if(wp==VK_ESCAPE)cmd_clear();return 0;}
+        if (g_cmd.active){
+            if(wp==VK_ESCAPE)cmd_clear();
+            else if(wp==VK_TAB)gui_command_accept_completion();
+            return 0;
+        }
         if(wp==VK_BACK)  g_input.key_backspace=true;
         if(wp==VK_RETURN)g_input.key_enter=true;
         if(wp==VK_SPACE) g_input.key_space=true;
@@ -4133,7 +4222,8 @@ static void handle_xevent(XEvent& ev) {
         if (g_cmd.active) {
             if (ks==XK_BackSpace){if(g_cmd.len>0)g_cmd.buf[--g_cmd.len]='\0';}
             else if(ks==XK_Return||ks==XK_KP_Enter) execute_command();
-            else if(n>0&&buf[0]>=32&&g_cmd.len<15){g_cmd.buf[g_cmd.len++]=buf[0];g_cmd.buf[g_cmd.len]='\0';}
+            else if(ks==XK_Tab) gui_command_accept_completion();
+            else if(n>0&&buf[0]>=32&&g_cmd.len<(int)sizeof(g_cmd.buf)-1){g_cmd.buf[g_cmd.len++]=buf[0];g_cmd.buf[g_cmd.len]='\0';}
             break;
         }
         if (n>0&&buf[0]==':'&&g_ctx.focused_input_id==0&&g_shortcuts_enabled) {
@@ -7318,6 +7408,7 @@ struct ScrollState {
     unsigned id = 0;
     float current = 0.0f;
     float target = 0.0f;
+    float content = 0.0f;
 };
 
 struct TabState {
@@ -7596,6 +7687,9 @@ static void draw_toasts() {
     }
 }
 
+static std::string command_completion(const std::string& prefix);
+static std::string command_hint(const std::string& prefix);
+
 static void draw_command_line() {
     App& a = app();
     if (a.height < 3) return;
@@ -7603,7 +7697,17 @@ static void draw_command_line() {
     Color bg = a.command_mode ? a.style.panel_alt : a.style.background;
     fill_rect(r, bg);
     if (a.command_mode) {
-        draw_text(0, a.height - 1, ":" + a.command_buffer, a.style.accent, bg, true, a.width);
+        std::string prefix = ":" + a.command_buffer;
+        draw_text(0, a.height - 1, prefix, a.style.accent, bg, true, a.width);
+        std::string completion = command_completion(a.command_buffer);
+        if (!completion.empty() && completion.size() > a.command_buffer.size()) {
+            std::string suffix = completion.substr(a.command_buffer.size());
+            draw_text((int)prefix.size(), a.height - 1, suffix, a.style.text_dim, bg, false,
+                      std::max(0, a.width - (int)prefix.size()));
+        }
+        std::string hint = command_hint(a.command_buffer);
+        int hint_x = std::max(0, a.width - (int)hint.size() - 1);
+        if (hint_x > (int)prefix.size() + 2) draw_text(hint_x, a.height - 1, hint, a.style.text_dim, bg, false);
     } else if (!a.command_message.empty()) {
         draw_text(0, a.height - 1, a.command_message, a.style.text_dim, bg, false, a.width);
     }
@@ -7722,6 +7826,52 @@ static void execute_command(const std::string& raw) {
     a.command_message = cmd.empty() ? "" : "not a command: " + cmd;
 }
 
+struct CommandSpec {
+    const char* command;
+    const char* hint;
+};
+
+static const CommandSpec k_commands[] = {
+    {"q", "quit"},
+    {"quit", "quit"},
+    {"exit", "quit"},
+    {"help", "show command help"},
+    {"?", "show command help"},
+    {"tab next", "next tab"},
+    {"tab prev", "previous tab"},
+    {"tn", "next tab"},
+    {"tp", "previous tab"},
+    {"theme dark", "dark theme"},
+    {"theme light", "light theme"},
+    {"theme green", "green theme"},
+    {"theme amber", "amber theme"},
+};
+
+static std::string command_completion(const std::string& prefix) {
+    if (prefix.empty()) return "";
+    std::string best;
+    for (const CommandSpec& spec : k_commands) {
+        std::string cmd = spec.command;
+        if (cmd.size() >= prefix.size() && cmd.compare(0, prefix.size(), prefix) == 0) {
+            if (best.empty() || cmd.size() < best.size()) best = cmd;
+        }
+    }
+    return best;
+}
+
+static std::string command_hint(const std::string& prefix) {
+    for (const CommandSpec& spec : k_commands) {
+        if (prefix == spec.command) return spec.hint;
+    }
+    std::string completion = command_completion(prefix);
+    if (!completion.empty()) {
+        for (const CommandSpec& spec : k_commands) {
+            if (completion == spec.command) return spec.hint;
+        }
+    }
+    return "tab complete  enter run  esc cancel";
+}
+
 static void consume_widget_input() {
     App& a = app();
     a.in.enter = false;
@@ -7825,8 +7975,8 @@ static bool parse_escape_sequence(const std::string& buf, size_t& i) {
             a.in.mouse_y = y - 1;
             a.in.mouse_event = true;
             int button = b & ~(4 | 8 | 16);
-            if (button == 64 || button == 66) a.in.wheel = 1;
-            else if (button == 65 || button == 67) a.in.wheel = -1;
+            if (button == 64 || button == 66) a.in.wheel = -1;
+            else if (button == 65 || button == 67) a.in.wheel = 1;
             else if ((b & 32) != 0) {
                 // Hover/motion report.
             } else if (buf[i] == 'M') {
@@ -7855,8 +8005,8 @@ static bool parse_escape_sequence(const std::string& buf, size_t& i) {
         a.in.mouse_y = y;
         a.in.mouse_event = true;
         int button = b & ~(4 | 8 | 16);
-        if (button == 64 || button == 66) a.in.wheel = 1;
-        else if (button == 65 || button == 67) a.in.wheel = -1;
+        if (button == 64 || button == 66) a.in.wheel = -1;
+        else if (button == 65 || button == 67) a.in.wheel = 1;
         else if ((b & 3) == 3) {
             a.in.mouse_released = true;
             a.mouse_down = false;
@@ -8267,6 +8417,9 @@ bool pump() {
             a.command_buffer.clear();
         } else if (a.in.backspace && !a.command_buffer.empty()) {
             a.command_buffer.pop_back();
+        } else if (a.in.tab) {
+            std::string completion = command_completion(a.command_buffer);
+            if (!completion.empty()) a.command_buffer = completion;
         } else {
             for (int i = 0; i < a.in.text_count; ++i) a.command_buffer.push_back(a.in.text[i]);
             if (a.in.enter) {
@@ -8613,7 +8766,7 @@ bool text_area_ex(const char* label, char* buffer, int buffer_size, int rows, Te
     std::vector<std::string> lines = split_lines_simple(buffer);
     ScrollState& ss = scroll_state(id);
     int max_scroll = std::max(0, (int)lines.size() - rows);
-    if ((hit || a.active_scroll_id == (int)id) && a.in.wheel != 0) ss.target += (float)a.in.wheel * 3.0f;
+    if (hit && a.in.wheel != 0) ss.target += (float)a.in.wheel * 3.0f;
     if (focused && a.in.up) ss.target -= 1.0f;
     if (focused && a.in.down) ss.target += 1.0f;
     ss.target = clamp_f(ss.target, 0.0f, (float)max_scroll);
@@ -8646,7 +8799,7 @@ void log_view(const char* label, const char* text_value, int rows, LogViewFlags 
     if (focused || hit) a.active_scroll_id = (int)id;
     bool manual_scroll = (focused || hit) && (a.in.wheel != 0 || a.in.up || a.in.down);
     if ((flags & LogViewFlags::AutoScrollBottom) && !manual_scroll) ss.target = (float)max_scroll;
-    if ((focused || hit || a.active_scroll_id == (int)id) && a.in.wheel != 0) ss.target += (float)a.in.wheel * 3.0f;
+    if (hit && a.in.wheel != 0) ss.target += (float)a.in.wheel * 3.0f;
     if (focused && a.in.up) ss.target -= 1.0f;
     if (focused && a.in.down) ss.target += 1.0f;
     ss.target = clamp_f(ss.target, 0.0f, (float)max_scroll);
@@ -8867,7 +9020,7 @@ bool listbox(const char* label, const char* const* items, int count, int* select
     bool changed = false;
     bool box_hit = contains(r, a.in.mouse_x, a.in.mouse_y);
     if (focused || box_hit) a.active_scroll_id = (int)id;
-    if (!disabled() && (focused || box_hit || a.active_scroll_id == (int)id)) {
+    if (!disabled() && (focused || box_hit)) {
         if (a.in.up && *selected > 0) { --*selected; changed = true; }
         if (a.in.down && *selected < count - 1) { ++*selected; changed = true; }
         if (a.in.wheel != 0) {
@@ -9027,8 +9180,11 @@ void scroll_area(const char* label, float height, std::function<void()> fn) {
     ScrollState& ss = scroll_state(id);
     bool hit = contains(r, a.in.mouse_x, a.in.mouse_y);
     if (focused || hit) a.active_scroll_id = (int)id;
-    if ((focused || hit || a.active_scroll_id == (int)id) && a.in.wheel != 0) ss.target += (float)a.in.wheel * 2.0f;
-    ss.target = std::max(0.0f, ss.target);
+    float previous_max_scroll = std::max(0.0f, ss.content - (float)std::max(0, r.h - 2));
+    if (hit && a.in.wheel != 0) ss.target += (float)a.in.wheel * 2.0f;
+    if (focused && a.in.up) ss.target -= 1.0f;
+    if (focused && a.in.down) ss.target += 1.0f;
+    ss.target = clamp_f(ss.target, 0.0f, previous_max_scroll);
     ease_to(ss.current, ss.target, 0.20f);
     draw_box({r.x, r.y, r.w, r.h}, focused ? a.style.accent : a.style.border, a.style.panel);
     int old_x = a.content_x;
@@ -9045,7 +9201,15 @@ void scroll_area(const char* label, float height, std::function<void()> fn) {
     a.clip_active = old_clip_active;
     a.clip_rect = old_clip;
     int used = a.cursor_y + (int)std::round(ss.current) - (r.y + 1);
-    ss.target = clamp_f(ss.target, 0.0f, (float)std::max(0, used - (r.h - 2)));
+    ss.content = (float)std::max(0, used);
+    float max_scroll = std::max(0.0f, ss.content - (float)std::max(0, r.h - 2));
+    ss.target = clamp_f(ss.target, 0.0f, max_scroll);
+    ss.current = clamp_f(ss.current, 0.0f, max_scroll);
+    if (max_scroll > 0.0f) {
+        char pct[32];
+        std::snprintf(pct, sizeof(pct), "%d/%d", (int)std::round(ss.current), (int)std::round(max_scroll));
+        draw_text(r.x + r.w - (int)std::strlen(pct) - 2, r.y, pct, a.style.text_dim, a.style.panel, false);
+    }
     a.content_x = old_x;
     a.cursor_y = old_y + r.h + 1;
     a.content_w = old_w;
@@ -9620,6 +9784,7 @@ struct Context {
     uint64_t next_toast_id = 1;
     std::string modal_label;
     std::string last_widget_id;
+    std::string command_message;
     int status_code = 200;
     std::string status_text = "OK";
     int disabled_depth = 0;
@@ -9640,6 +9805,7 @@ static void append_css();
 static void append_ink_filters();
 static void append_toast_stack();
 static void append_toast_script();
+static const char* find_param(const char* name);
 
 static void debugf(const char* fmt, ...) {
     Context& c = ctx();
@@ -9979,6 +10145,113 @@ static void queue_toast(ToastType type, const char* title, const char* message,
     t.duration_ms = duration_ms;
     t.dismissible = dismissible;
     queue_toast(t);
+}
+
+struct WebCommandSpec {
+    const char* command;
+    const char* hint;
+};
+
+static const WebCommandSpec k_web_commands[] = {
+    {"q", "quit"},
+    {"quit", "quit"},
+    {"exit", "quit"},
+    {"wq", "save and quit"},
+    {"x", "save and quit"},
+    {"help", "show command help"},
+    {"?", "show command help"},
+    {"tab next", "next tab"},
+    {"tab prev", "previous tab"},
+    {"tn", "next tab"},
+    {"tp", "previous tab"},
+    {"theme dark", "dark theme"},
+    {"theme light", "light theme"},
+    {"theme one", "one dark theme"},
+    {"td", "dark theme"},
+    {"to", "one dark theme"},
+    {"rr", "refresh"},
+};
+
+static std::string command_completion(std::string_view prefix) {
+    if (prefix.empty()) return "";
+    std::string lower = lower_copy(prefix);
+    std::string best;
+    for (const WebCommandSpec& spec : k_web_commands) {
+        std::string cmd = spec.command;
+        if (cmd.size() >= lower.size() && cmd.compare(0, lower.size(), lower) == 0) {
+            if (best.empty() || cmd.size() < best.size()) best = cmd;
+        }
+    }
+    return best;
+}
+
+static bool command_is(std::string_view value, const char* a, const char* b = nullptr, const char* c = nullptr) {
+    return value == (a ? a : "") || (b && value == b) || (c && value == c);
+}
+
+static bool execute_command(std::string_view raw) {
+    Context& c = ctx();
+    std::string cmd = trim_copy(raw);
+    for (char& ch : cmd) ch = (char)std::tolower((unsigned char)ch);
+    if (!cmd.empty() && cmd[0] == ':') cmd.erase(cmd.begin());
+    cmd = trim_copy(cmd);
+    if (cmd.empty()) return false;
+
+    if (command_is(cmd, "q", "quit", "exit") || command_is(cmd, "wq", "x")) {
+        c.command_message = "web session stays open; close the browser tab or stop the server";
+        queue_toast(ToastType::Info, "Command", c.command_message.c_str(), 4200, true);
+        return true;
+    }
+    if (command_is(cmd, "help", "?")) {
+        c.command_message = "commands: q, help, theme dark/light/one, tab next, tab prev, rr";
+        queue_toast(ToastType::Info, "Commands", c.command_message.c_str(), 7000, true);
+        return true;
+    }
+    if (command_is(cmd, "theme dark", "td")) {
+        c.style = one_dark_style();
+        c.cfg.dark_mode = true;
+        c.command_message = "theme dark";
+        queue_toast(ToastType::Success, "Command", "Theme set to dark.");
+        return true;
+    }
+    if (command_is(cmd, "theme one", "to")) {
+        c.style = one_dark_style();
+        c.cfg.dark_mode = true;
+        c.command_message = "theme one";
+        queue_toast(ToastType::Success, "Command", "Theme set to one dark.");
+        return true;
+    }
+    if (command_is(cmd, "theme light")) {
+        c.style = default_dark_style();
+        c.cfg.dark_mode = false;
+        c.command_message = "theme light";
+        queue_toast(ToastType::Success, "Command", "Theme set to light.");
+        return true;
+    }
+    if (command_is(cmd, "tab next", "tn", "tabn") || command_is(cmd, "tab prev", "tp", "tabp")) {
+        c.command_message = "tab commands are handled in the browser when possible";
+        queue_toast(ToastType::Info, "Command", c.command_message.c_str(), 3600, true);
+        return true;
+    }
+    if (command_is(cmd, "rr", "redraw", "refresh")) {
+        c.command_message = "refresh";
+        queue_toast(ToastType::Success, "Command", "Refreshed.");
+        return true;
+    }
+
+    std::string completion = command_completion(cmd);
+    if (!completion.empty()) {
+        c.command_message = "unknown command: " + cmd + " (did you mean :" + completion + "?)";
+    } else {
+        c.command_message = "unknown command: " + cmd;
+    }
+    queue_toast(ToastType::Warning, "Command", c.command_message.c_str(), 5200, true);
+    return false;
+}
+
+static void execute_posted_command_if_needed() {
+    const char* posted = find_param("_ftht_command");
+    if (posted && *posted) execute_command(posted);
 }
 
 static const char* random_draw_success_message() {
@@ -10945,6 +11218,7 @@ static void append_css() {
     c.out += ".ft-toast-info{border-left-color:var(--accent)}.ft-toast-success{border-left-color:var(--success)}.ft-toast-warning{border-left-color:var(--warning)}.ft-toast-error{border-left-color:var(--error)}";
     c.out += ".ft-toast-title{font-weight:900;text-transform:uppercase;font-size:12px;color:var(--muted);letter-spacing:.04em}.ft-toast-body{grid-column:1;margin:0;font-weight:800}.ft-toast-close{grid-column:2;grid-row:1/span 2;align-self:start;min-height:24px;min-width:24px;padding:0 6px;box-shadow:2px 2px 0 var(--border);font-size:16px;line-height:1}.ft-toast-out{animation:ft-toast-out .20s ease forwards}";
     c.out += "@keyframes ft-toast-in{to{opacity:1;transform:translateY(0)}}@keyframes ft-toast-out{to{opacity:0;transform:translateY(8px)}}";
+    c.out += ".ft-command-shell{position:fixed;left:16px;right:16px;bottom:16px;z-index:90;display:none;align-items:center;gap:0;background:var(--paper);border:3px solid var(--border);box-shadow:6px 7px 0 rgba(0,0,0,.24);padding:8px 10px;color:var(--ink);font:900 15px/1.2 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.ft-command-shell.open{display:flex}.ft-command-prefix{color:var(--accent);padding-right:2px}.ft-command-input{position:absolute;opacity:0;pointer-events:none;width:1px;height:1px}.ft-command-text{color:var(--accent);white-space:pre}.ft-command-preview{color:var(--faint);white-space:pre}.ft-command-hint{margin-left:auto;color:var(--muted);font-size:12px;text-transform:uppercase}";
     c.out += ".ft-bleed{pointer-events:none;position:absolute;inset:0;border:0 solid transparent;opacity:0}";
     c.out += "@media(prefers-color-scheme:dark){.accent{color:#fff}.warning,.success{color:#050505}}@media(max-width:720px){main{margin:0;padding:14px;border-width:2px;box-shadow:none}.ft-row{grid-template-columns:1fr!important}.ft-toast-stack{left:10px;right:10px;bottom:10px;width:auto;align-items:stretch}.ft-toast{width:100%}}";
     c.out += "</style>";
@@ -11093,6 +11367,25 @@ static void append_client_script() {
   let timer = 0;
   let inflight = null;
   let lastButton = null;
+  const commands = [
+    ["q", "quit"],
+    ["quit", "quit"],
+    ["exit", "quit"],
+    ["wq", "save and quit"],
+    ["x", "save and quit"],
+    ["help", "show commands"],
+    ["?", "show commands"],
+    ["tab next", "next tab"],
+    ["tab prev", "previous tab"],
+    ["tn", "next tab"],
+    ["tp", "previous tab"],
+    ["theme dark", "dark theme"],
+    ["theme light", "light theme"],
+    ["theme one", "one dark theme"],
+    ["td", "dark theme"],
+    ["to", "one dark theme"],
+    ["rr", "refresh"]
+  ];
 
   function main() { return document.querySelector("main"); }
   function form() { return document.querySelector("main form"); }
@@ -11196,6 +11489,100 @@ static void append_client_script() {
     clearTimeout(timer);
     timer = setTimeout(() => send(reason, null), fast ? 20 : 220);
   }
+  function commandCompletion(value) {
+    const v = String(value || "").toLowerCase();
+    if (!v) return "";
+    let best = "";
+    for (const item of commands) {
+      const cmd = item[0];
+      if (cmd.startsWith(v) && (!best || cmd.length < best.length)) best = cmd;
+    }
+    return best;
+  }
+  function commandHint(value) {
+    const v = String(value || "").toLowerCase();
+    const exact = commands.find(item => item[0] === v);
+    if (exact) return exact[1];
+    const c = commandCompletion(v);
+    const found = commands.find(item => item[0] === c);
+    return found ? found[1] : "tab complete  enter run  esc cancel";
+  }
+  function ensureCommandShell() {
+    let shell = document.querySelector(".ft-command-shell");
+    if (shell) return shell;
+    shell = document.createElement("div");
+    shell.className = "ft-command-shell";
+    shell.innerHTML = '<span class="ft-command-prefix">:</span><input class="ft-command-input" autocomplete="off" spellcheck="false"><span class="ft-command-text"></span><span class="ft-command-preview"></span><span class="ft-command-hint"></span>';
+    document.body.appendChild(shell);
+    const input = shell.querySelector(".ft-command-input");
+    input.addEventListener("input", () => renderCommandShell(shell));
+    input.addEventListener("keydown", ev => {
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        closeCommandShell(shell);
+      } else if (ev.key === "Tab") {
+        ev.preventDefault();
+        const completion = commandCompletion(input.value);
+        if (completion) {
+          input.value = completion;
+          renderCommandShell(shell);
+        }
+      } else if (ev.key === "Enter") {
+        ev.preventDefault();
+        const value = input.value.trim();
+        closeCommandShell(shell);
+        if (value) runCommand(value);
+      }
+    });
+    return shell;
+  }
+  function renderCommandShell(shell) {
+    const input = shell.querySelector(".ft-command-input");
+    const text = shell.querySelector(".ft-command-text");
+    const preview = shell.querySelector(".ft-command-preview");
+    const hint = shell.querySelector(".ft-command-hint");
+    const value = input.value || "";
+    const completion = commandCompletion(value);
+    text.textContent = value;
+    preview.textContent = completion && completion.startsWith(value.toLowerCase()) ? completion.slice(value.length) : "";
+    hint.textContent = commandHint(value);
+  }
+  function openCommandShell(initial = "") {
+    const shell = ensureCommandShell();
+    const input = shell.querySelector(".ft-command-input");
+    input.value = initial;
+    shell.classList.add("open");
+    renderCommandShell(shell);
+    input.focus({ preventScroll: true });
+  }
+  function closeCommandShell(shell = ensureCommandShell()) {
+    shell.classList.remove("open");
+    const input = shell.querySelector(".ft-command-input");
+    input.value = "";
+    renderCommandShell(shell);
+  }
+  function runCommand(value) {
+    const cmd = String(value || "").trim().replace(/^:/, "");
+    if (!cmd) return;
+    const lower = cmd.toLowerCase();
+    if (lower === "tab next" || lower === "tn") {
+      const tabs = Array.from(document.querySelectorAll(".ft-tabs button"));
+      const cur = tabs.findIndex(b => b.classList.contains("sel"));
+      if (cur >= 0 && tabs.length) {
+        tabs[Math.min(tabs.length - 1, cur + 1)].click();
+        return;
+      }
+    }
+    if (lower === "tab prev" || lower === "tp") {
+      const tabs = Array.from(document.querySelectorAll(".ft-tabs button"));
+      const cur = tabs.findIndex(b => b.classList.contains("sel"));
+      if (cur >= 0 && tabs.length) {
+        tabs[Math.max(0, cur - 1)].click();
+        return;
+      }
+    }
+    send("command", { name: "_ftht_command", value: cmd });
+  }
   document.addEventListener("submit", ev => {
     const f = form();
     if (!f || ev.target !== f) return;
@@ -11209,6 +11596,16 @@ static void append_client_script() {
   });
   document.addEventListener("change", ev => schedule("change", ev.target));
   document.addEventListener("input", ev => schedule("input", ev.target));
+  document.addEventListener("keydown", ev => {
+    const target = ev.target;
+    const editing = target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
+    const shell = document.querySelector(".ft-command-shell");
+    if (shell && shell.classList.contains("open")) return;
+    if (!editing && ev.key === ":") {
+      ev.preventDefault();
+      openCommandShell("");
+    }
+  });
   initRanges();
   if (pollMs > 0) {
     setInterval(() => {
@@ -11368,7 +11765,10 @@ bool pump(int timeout_ms) {
     bool ok = accept_next_request(timeout_ms);
     c.request_active = ok;
     if (!ok && timeout_ms >= 0) debugf("pump timeout/no request");
-    if (ok) debugf("pump has request: %s %s", c.req_method.c_str(), c.req_path.c_str());
+    if (ok) {
+        execute_posted_command_if_needed();
+        debugf("pump has request: %s %s", c.req_method.c_str(), c.req_path.c_str());
+    }
     return ok;
 }
 

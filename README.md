@@ -183,6 +183,31 @@ Functions:
 | `ft::config()` | Returns the active resolved config |
 | `ft::request_redraw()` | Asks the backend to redraw |
 
+## Vim-Style Commands
+
+GUI, TUI, and web builds support a small Vim-style command prompt. Press `:`,
+type a command, press `Tab` to accept the gray autocomplete preview, press
+`Enter` to run, or press `Esc` to cancel.
+
+Common commands:
+
+| Command | Meaning |
+| --- | --- |
+| `:q`, `:quit`, `:exit` | Quit where the backend can quit directly; web explains that the tab/server must be closed |
+| `:help`, `:?` | Show command help |
+| `:tab next`, `:tn` | Move to the next tab where the backend can resolve tabs |
+| `:tab prev`, `:tp` | Move to the previous tab where the backend can resolve tabs |
+| `:theme dark`, `:td` | Switch to a dark theme |
+| `:theme light` | Switch to a light/default web theme where supported |
+| `:theme green` | TUI green theme |
+| `:theme amber` | TUI amber theme |
+| `:rr` | Request refresh/redraw |
+
+The TUI command line renders the typed prefix in the accent color and the
+completion suffix in gray. The web command palette uses the same interaction in
+the browser and stays out of the way while typing inside inputs, text areas, and
+select controls.
+
 ## Configuration
 
 `ft::Config` contains the shared window settings plus backend-specific options:
@@ -608,6 +633,10 @@ ft::set_status(404, "Not found");
 
 Outside web mode, web helpers are harmless no-ops or empty values.
 
+The web backend also includes the same `:` command palette. It can run browser
+commands like `:tab next` locally when possible, and posts `_ftht_command` to
+the server for commands such as `:help`, `:theme dark`, and `:rr`.
+
 ### Login Modes
 
 ```cpp
@@ -768,6 +797,14 @@ build/ft_combined_smoke --tui
 
 If that renders, the flag works and the failed launch context probably had no
 usable TTY.
+
+### TUI Scrolling Does Not Move
+
+TUI scrolling depends on terminal mouse wheel escape sequences. FT enables SGR
+mouse mode for TUI apps, and wheel-down now maps to positive scroll movement.
+If a terminal still does not scroll, check that mouse reporting is enabled in
+the terminal and that the pointer is over the scrollable widget. Arrow keys
+scroll focused text areas, log views, and scroll regions.
 
 ### GUI Build Fails On Linux
 

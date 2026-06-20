@@ -800,11 +800,15 @@ usable TTY.
 
 ### TUI Scrolling Does Not Move
 
-TUI scrolling depends on terminal mouse wheel escape sequences. FT enables SGR
-mouse mode for TUI apps, and wheel-down now maps to positive scroll movement.
-If a terminal still does not scroll, check that mouse reporting is enabled in
-the terminal and that the pointer is over the scrollable widget. Arrow keys
-scroll focused text areas, log views, and scroll regions.
+TUI scrolling supports normal terminal wheel events, including two-finger
+touchpad scrolling in terminal emulators that report wheel escape sequences. FT
+enables SGR mouse mode for TUI apps. Wheel-down scrolls the page down and a
+right-edge scrollbar appears when the rendered page is taller than the terminal.
+
+Widget-local scroll still works for text areas, log views, list boxes, and
+`scroll_area()`. Those widgets consume the wheel only while the pointer is over
+the widget; otherwise the same wheel event scrolls the whole page. Arrow keys
+continue to scroll focused text areas, log views, and scroll regions.
 
 ### GUI Build Fails On Linux
 

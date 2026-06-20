@@ -7435,6 +7435,9 @@ struct App {
     int cursor_y = 2;
     int content_x = 2;
     int content_w = 76;
+    float page_scroll_current = 0.0f;
+    float page_scroll_target = 0.0f;
+    float page_content_height = 0.0f;
     bool clip_active = false;
     Rect clip_rect;
     int focused = 0;
@@ -7754,6 +7757,16 @@ static void ease_to(float& value, float target, float speed = 0.18f) {
     float d = target - value;
     value += d * speed;
     if (std::abs(d) < 0.03f) value = target;
+}
+
+static float page_scroll_max() {
+    App& a = app();
+    float visible_rows = (float)std::max(1, a.height - 3);
+    return std::max(0.0f, a.page_content_height - visible_rows);
+}
+
+static void consume_wheel() {
+    app().in.wheel = 0;
 }
 
 static bool register_focus(unsigned id, Rect r) {
@@ -8368,6 +8381,9 @@ bool create_window(const Config& cfg) {
     a.running = true;
     a.initialized = true;
     a.redraw = true;
+    a.page_scroll_current = 0.0f;
+    a.page_scroll_target = 0.0f;
+    a.page_content_height = 0.0f;
     a.start_time = std::chrono::steady_clock::now();
     a.last_frame = a.start_time;
 #if defined(_WIN32)
@@ -8452,8 +8468,12 @@ void begin() {
     a.hovered = 0;
     a.pending_tooltip.clear();
     a.graphics_commands.clear();
+    a.clip_active = false;
+    a.page_scroll_target = clamp_f(a.page_scroll_target, 0.0f, page_scroll_max());
+    ease_to(a.page_scroll_current, a.page_scroll_target, 0.22f);
+    a.page_scroll_current = clamp_f(a.page_scroll_current, 0.0f, page_scroll_max());
     a.cursor_x = 2;
-    a.cursor_y = 2;
+    a.cursor_y = 2 - (int)std::round(a.page_scroll_current);
     a.content_x = 2;
     a.content_w = std::max(10, a.width - 4);
     resize_canvas();
@@ -8465,6 +8485,8 @@ void begin() {
         draw_text(a.width - (int)hint.size() - 2, 0, hint, a.style.text_dim, a.style.background, false);
     }
     draw_hline(0, 1, a.width, '-', a.style.border, a.style.background);
+    a.clip_active = true;
+    a.clip_rect = {0, 2, a.width, std::max(0, a.height - 2)};
 }
 
 void end() {
@@ -8472,6 +8494,25 @@ void end() {
     App& a = app();
     if (!a.began) return;
     a.began = false;
+    a.clip_active = false;
+    float measured_content = (float)(a.cursor_y - 2) + a.page_scroll_current;
+    a.page_content_height = std::max(0.0f, measured_content);
+    if (!a.command_mode && a.in.wheel != 0) {
+        a.page_scroll_target += (float)a.in.wheel * 3.0f;
+        consume_wheel();
+    }
+    a.page_scroll_target = clamp_f(a.page_scroll_target, 0.0f, page_scroll_max());
+    a.page_scroll_current = clamp_f(a.page_scroll_current, 0.0f, page_scroll_max());
+    float max_page = page_scroll_max();
+    if (max_page > 0.0f && a.width > 4 && a.height > 8) {
+        int track_y = 2;
+        int track_h = std::max(1, a.height - 4);
+        int x = a.width - 1;
+        for (int y = track_y; y < track_y + track_h; ++y) put(x, y, '|', a.style.border, a.style.background);
+        int thumb_h = clamp_i((int)std::round(((float)track_h / std::max(1.0f, a.page_content_height)) * (float)track_h), 1, track_h);
+        int thumb_y = track_y + clamp_i((int)std::round((a.page_scroll_current / max_page) * (float)(track_h - thumb_h)), 0, std::max(0, track_h - thumb_h));
+        for (int y = thumb_y; y < thumb_y + thumb_h; ++y) put(x, y, '#', a.style.accent, a.style.background, true);
+    }
     if (!a.focused && !a.focus_order.empty()) a.focused = a.focus_order.front();
     draw_toasts();
     draw_tooltip_box();
@@ -8766,7 +8807,10 @@ bool text_area_ex(const char* label, char* buffer, int buffer_size, int rows, Te
     std::vector<std::string> lines = split_lines_simple(buffer);
     ScrollState& ss = scroll_state(id);
     int max_scroll = std::max(0, (int)lines.size() - rows);
-    if (hit && a.in.wheel != 0) ss.target += (float)a.in.wheel * 3.0f;
+    if (hit && a.in.wheel != 0) {
+        ss.target += (float)a.in.wheel * 3.0f;
+        consume_wheel();
+    }
     if (focused && a.in.up) ss.target -= 1.0f;
     if (focused && a.in.down) ss.target += 1.0f;
     ss.target = clamp_f(ss.target, 0.0f, (float)max_scroll);
@@ -8799,7 +8843,10 @@ void log_view(const char* label, const char* text_value, int rows, LogViewFlags 
     if (focused || hit) a.active_scroll_id = (int)id;
     bool manual_scroll = (focused || hit) && (a.in.wheel != 0 || a.in.up || a.in.down);
     if ((flags & LogViewFlags::AutoScrollBottom) && !manual_scroll) ss.target = (float)max_scroll;
-    if (hit && a.in.wheel != 0) ss.target += (float)a.in.wheel * 3.0f;
+    if (hit && a.in.wheel != 0) {
+        ss.target += (float)a.in.wheel * 3.0f;
+        consume_wheel();
+    }
     if (focused && a.in.up) ss.target -= 1.0f;
     if (focused && a.in.down) ss.target += 1.0f;
     ss.target = clamp_f(ss.target, 0.0f, (float)max_scroll);
@@ -9001,7 +9048,7 @@ bool side_menu(const char* label, const char* const* items, int count, int* sele
     if (focused) put(width - 2, 3, '*', a.style.accent, a.style.panel, true);
     a.content_x = width + 2;
     a.cursor_x = a.content_x;
-    a.cursor_y = 3;
+    a.cursor_y = 3 - (int)std::round(a.page_scroll_current);
     a.content_w = std::max(10, a.width - a.content_x - 2);
     return changed;
 }
@@ -9027,6 +9074,7 @@ bool listbox(const char* label, const char* const* items, int count, int* select
             int next = clamp_i(*selected + a.in.wheel, 0, count - 1);
             changed = changed || next != *selected;
             *selected = next;
+            consume_wheel();
         }
     }
     int first = clamp_i(*selected - visible_rows / 2, 0, std::max(0, count - visible_rows));
@@ -9181,7 +9229,10 @@ void scroll_area(const char* label, float height, std::function<void()> fn) {
     bool hit = contains(r, a.in.mouse_x, a.in.mouse_y);
     if (focused || hit) a.active_scroll_id = (int)id;
     float previous_max_scroll = std::max(0.0f, ss.content - (float)std::max(0, r.h - 2));
-    if (hit && a.in.wheel != 0) ss.target += (float)a.in.wheel * 2.0f;
+    if (hit && a.in.wheel != 0) {
+        ss.target += (float)a.in.wheel * 2.0f;
+        consume_wheel();
+    }
     if (focused && a.in.up) ss.target -= 1.0f;
     if (focused && a.in.down) ss.target += 1.0f;
     ss.target = clamp_f(ss.target, 0.0f, previous_max_scroll);

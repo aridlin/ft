@@ -72,10 +72,16 @@ mkdir -p build
 c++ examples/ft_combined_smoke.cpp -o build/ft_combined_smoke -std=c++17 $(pkg-config --cflags --libs cairo x11) -pthread
 ```
 
+Compile on Windows with `clang++`:
+
+```bash
+clang++ examples/ft_combined_smoke.cpp -o build/ft_combined_smoke.exe -std=c++17
+```
+
 Compile on Windows with MSVC:
 
 ```bat
-cl /std:c++17 examples\ft_combined_smoke.cpp d2d1.lib dwrite.lib gdi32.lib ole32.lib uuid.lib user32.lib windowscodecs.lib ws2_32.lib
+cl /std:c++17 examples\ft_combined_smoke.cpp
 ```
 
 Build every bundled demo:

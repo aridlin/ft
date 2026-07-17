@@ -7205,6 +7205,8 @@ void set_backdrop_effect(BackdropEffect effect);
 void set_dither_size(int px);
 void set_window_icon(void* native_icon);
 void set_window_icon_builtin(BuiltinIcon variant = BuiltinIcon::Symbol);
+using CommandHandler = bool (*)(const char* command);
+void set_command_handler(CommandHandler handler);
 
 enum class InputFlags : unsigned {
     Default = 0,
@@ -7459,6 +7461,11 @@ struct ToastState {
     std::chrono::steady_clock::time_point created;
 };
 
+struct ScrollScope {
+    unsigned id = 0;
+    Rect viewport;
+};
+
 struct App {
     Config cfg;
     Style style;
@@ -7490,16 +7497,19 @@ struct App {
     bool command_mode = false;
     std::string command_buffer;
     std::string command_message;
+    CommandHandler command_handler = nullptr;
     int active_tabs_id = 0;
     int tab_command_delta = 0;
     int text_focus_id = 0;
     int active_scroll_id = 0;
+    int focus_scroll_pending_id = 0;
     std::vector<int> focus_order;
     std::vector<Cell> cells;
     InputState in;
     std::string input_pending;
     std::vector<Motion> motions;
     std::vector<ScrollState> scrolls;
+    std::vector<ScrollScope> scroll_scopes;
     std::vector<TabState> tabs;
     std::vector<ToastState> toasts;
     std::vector<std::string> graphics_commands;
@@ -7802,6 +7812,63 @@ static float page_scroll_max() {
     return std::max(0.0f, a.page_content_height - visible_rows);
 }
 
+static bool adjust_scroll_for_rect(float current, float& target, Rect item, int top, int bottom) {
+    if (bottom <= top) return true;
+    if (item.h >= bottom - top) {
+        if (item.y < top || item.y > top + 1) {
+            target = current + (float)(item.y - top);
+            return false;
+        }
+        return true;
+    }
+    if (item.y < top) {
+        target = current - (float)(top - item.y);
+        return false;
+    }
+    int item_bottom = item.y + item.h;
+    if (item_bottom > bottom) {
+        target = current + (float)(item_bottom - bottom);
+        return false;
+    }
+    return true;
+}
+
+static bool ensure_page_rect_visible(Rect r) {
+    App& a = app();
+    int top = 2;
+    int bottom = std::max(top + 1, a.height - 1);
+    bool visible = adjust_scroll_for_rect(a.page_scroll_current, a.page_scroll_target, r, top, bottom);
+    a.page_scroll_target = clamp_f(a.page_scroll_target, 0.0f, page_scroll_max());
+    return visible;
+}
+
+static bool ensure_scoped_rect_visible(Rect r) {
+    App& a = app();
+    if (a.scroll_scopes.empty()) return true;
+    ScrollScope scope = a.scroll_scopes.back();
+    ScrollState& ss = scroll_state(scope.id);
+    bool visible = adjust_scroll_for_rect(
+        ss.current,
+        ss.target,
+        r,
+        scope.viewport.y,
+        scope.viewport.y + scope.viewport.h
+    );
+    float max_scroll = std::max(0.0f, ss.content - (float)std::max(0, scope.viewport.h));
+    ss.target = clamp_f(ss.target, 0.0f, max_scroll);
+    return visible;
+}
+
+static void ensure_focused_rect_visible(unsigned id, Rect r) {
+    App& a = app();
+    if (a.focus_scroll_pending_id != (int)id) return;
+    Rect page_r = r;
+    if (!a.scroll_scopes.empty()) page_r = a.scroll_scopes.front().viewport;
+    bool page_visible = ensure_page_rect_visible(page_r);
+    bool local_visible = ensure_scoped_rect_visible(r);
+    if (page_visible && local_visible) a.focus_scroll_pending_id = 0;
+}
+
 static void consume_wheel() {
     app().in.wheel = 0;
 }
@@ -7814,9 +7881,11 @@ static bool register_focus(unsigned id, Rect r) {
     if (!a.focused) a.focused = (int)id;
     if (a.request_focus_id == (int)id) {
         a.focused = (int)id;
+        a.focus_scroll_pending_id = (int)id;
         a.request_focus_id = 0;
     }
     bool focused = a.focused == (int)id;
+    if (focused) ensure_focused_rect_visible(id, r);
     Motion& m = motion(id);
     animate_to(m.focus, focused ? 1.0f : 0.0f);
     bool mouse_hit = contains(r, a.in.mouse_x, a.in.mouse_y);
@@ -7832,45 +7901,99 @@ static bool disabled() {
 
 static void execute_command(const std::string& raw) {
     App& a = app();
-    std::string cmd = raw;
-    while (!cmd.empty() && std::isspace((unsigned char)cmd.front())) cmd.erase(cmd.begin());
-    while (!cmd.empty() && std::isspace((unsigned char)cmd.back())) cmd.pop_back();
-    if (cmd == "q" || cmd == "quit" || cmd == "exit") {
+    std::string typed = raw;
+    while (!typed.empty() && std::isspace((unsigned char)typed.front())) typed.erase(typed.begin());
+    while (!typed.empty() && std::isspace((unsigned char)typed.back())) typed.pop_back();
+    if (!typed.empty() && typed[0] == ':') typed.erase(typed.begin());
+    if (typed.empty()) return;
+    if (a.command_handler && a.command_handler(typed.c_str())) {
+        a.command_message = typed;
+        a.redraw = true;
+        return;
+    }
+    std::string cmd = typed;
+    for (char& ch : cmd) ch = (char)std::tolower((unsigned char)ch);
+    if (cmd == "q" || cmd == "quit" || cmd == "exit" || cmd == "wq" || cmd == "x") {
         a.running = false;
         return;
     }
-    if (cmd == "tab next" || cmd == "tn") {
+    if (cmd == "tab next" || cmd == "tn" || cmd == "tabn") {
         a.tab_command_delta = 1;
         a.command_message = "tab next";
         return;
     }
-    if (cmd == "tab prev" || cmd == "tp" || cmd == "tab previous") {
+    if (cmd == "tab prev" || cmd == "tp" || cmd == "tabp" || cmd == "tab previous") {
         a.tab_command_delta = -1;
         a.command_message = "tab prev";
         return;
     }
-    if (cmd == "theme dark") {
+    if (cmd == "theme dark" || cmd == "td") {
         a.style = default_dark_style();
         a.command_message = "theme dark";
         return;
     }
-    if (cmd == "theme light") {
+    if (cmd == "theme light" || cmd == "tl") {
         a.style = light_style();
         a.command_message = "theme light";
         return;
     }
-    if (cmd == "theme green") {
+    if (cmd == "theme green" || cmd == "green") {
         a.style = terminal_green_style();
         a.command_message = "theme green";
         return;
     }
-    if (cmd == "theme amber") {
+    if (cmd == "theme amber" || cmd == "amber") {
         a.style = amber_style();
         a.command_message = "theme amber";
         return;
     }
+    if (cmd == "theme one" || cmd == "to") {
+        a.style = one_dark_style();
+        a.command_message = "theme one";
+        return;
+    }
+    if (cmd == "theme catppuccin" || cmd == "tc") {
+        a.style = catppuccin_mocha_style();
+        a.command_message = "theme catppuccin";
+        return;
+    }
+    if (cmd == "theme nord" || cmd == "tnord") {
+        a.style = nord_style();
+        a.command_message = "theme nord";
+        return;
+    }
+    if (cmd == "theme gruvbox" || cmd == "tg") {
+        a.style = gruvbox_dark_style();
+        a.command_message = "theme gruvbox";
+        return;
+    }
+    if (cmd == "theme ghostty" || cmd == "th") {
+        a.style = ghostty_green_style();
+        a.command_message = "theme ghostty";
+        return;
+    }
+    if (cmd == "rr" || cmd == "redraw" || cmd == "refresh") {
+        a.redraw = true;
+        a.command_message = "redraw";
+        return;
+    }
+    if (cmd == "df") { a.dbg.show_fps = !a.dbg.show_fps; a.command_message = "debug fps"; return; }
+    if (cmd == "dl") { a.dbg.show_layout_rects = !a.dbg.show_layout_rects; a.command_message = "debug layout"; return; }
+    if (cmd == "di") {
+        bool next = !(a.dbg.show_hovered_id || a.dbg.show_active_id);
+        a.dbg.show_hovered_id = next;
+        a.dbg.show_active_id = next;
+        a.command_message = "debug ids";
+        return;
+    }
+    if (cmd == "dw") { a.dbg.log_widget_calls = !a.dbg.log_widget_calls; a.command_message = "debug widgets"; return; }
+    if (cmd == "ct") {
+        a.toasts.clear();
+        a.command_message = "clear toasts";
+        return;
+    }
     if (cmd == "help" || cmd == "?") {
-        a.command_message = "commands: q, theme dark/light/green/amber, tab next, tab prev";
+        a.command_message = "commands: q, help, theme dark/light/green/amber/one/catppuccin/nord/gruvbox/ghostty, tab next, tab prev, rr, ct, web";
         return;
     }
     a.command_message = cmd.empty() ? "" : "not a command: " + cmd;
@@ -7885,16 +8008,47 @@ static const CommandSpec k_commands[] = {
     {"q", "quit"},
     {"quit", "quit"},
     {"exit", "quit"},
+    {"wq", "save and quit"},
+    {"x", "save and quit"},
     {"help", "show command help"},
     {"?", "show command help"},
     {"tab next", "next tab"},
+    {"tabn", "next tab"},
     {"tab prev", "previous tab"},
+    {"tab previous", "previous tab"},
+    {"tabp", "previous tab"},
     {"tn", "next tab"},
     {"tp", "previous tab"},
     {"theme dark", "dark theme"},
     {"theme light", "light theme"},
     {"theme green", "green theme"},
     {"theme amber", "amber theme"},
+    {"theme one", "one dark theme"},
+    {"theme catppuccin", "catppuccin theme"},
+    {"theme nord", "nord theme"},
+    {"theme gruvbox", "gruvbox theme"},
+    {"theme ghostty", "ghostty theme"},
+    {"td", "dark theme"},
+    {"tl", "light theme"},
+    {"green", "green theme"},
+    {"amber", "amber theme"},
+    {"to", "one dark theme"},
+    {"tc", "catppuccin theme"},
+    {"tnord", "nord theme"},
+    {"tg", "gruvbox theme"},
+    {"th", "ghostty theme"},
+    {"rr", "redraw"},
+    {"redraw", "redraw"},
+    {"refresh", "redraw"},
+    {"df", "toggle fps"},
+    {"dl", "layout rects"},
+    {"di", "debug ids"},
+    {"dw", "widget log"},
+    {"ct", "clear toasts"},
+    {"web", "web server"},
+    {"ws", "web server"},
+    {"server", "web server"},
+    {"webserver", "web server"},
 };
 
 static std::string command_completion(const std::string& prefix) {
@@ -7944,7 +8098,11 @@ static void focus_delta(int delta) {
     auto it = std::find(a.focus_order.begin(), a.focus_order.end(), a.focused);
     int idx = it == a.focus_order.end() ? 0 : (int)(it - a.focus_order.begin());
     idx = (idx + delta + (int)a.focus_order.size()) % (int)a.focus_order.size();
-    a.focused = a.focus_order[(size_t)idx];
+    int next = a.focus_order[(size_t)idx];
+    if (a.focused != next) {
+        a.focused = next;
+        a.focus_scroll_pending_id = next;
+    }
 }
 
 static void reset_input() {
@@ -8421,6 +8579,8 @@ bool create_window(const Config& cfg) {
     a.page_scroll_current = 0.0f;
     a.page_scroll_target = 0.0f;
     a.page_content_height = 0.0f;
+    a.focus_scroll_pending_id = 0;
+    a.scroll_scopes.clear();
     a.start_time = std::chrono::steady_clock::now();
     a.last_frame = a.start_time;
 #if defined(_WIN32)
@@ -8502,6 +8662,7 @@ void begin() {
     App& a = app();
     a.began = true;
     a.focus_order.clear();
+    a.scroll_scopes.clear();
     a.hovered = 0;
     a.pending_tooltip.clear();
     a.graphics_commands.clear();
@@ -8633,6 +8794,10 @@ void set_window_icon(void* native_icon) {
 
 void set_window_icon_builtin(BuiltinIcon variant) {
     (void)variant;
+}
+
+void set_command_handler(CommandHandler handler) {
+    detail::app().command_handler = handler;
 }
 
 void label(const char* s) {
@@ -9285,7 +9450,9 @@ void scroll_area(const char* label, float height, std::function<void()> fn) {
     a.content_w = std::max(4, r.w - 4);
     a.clip_active = true;
     a.clip_rect = {r.x + 1, r.y + 1, std::max(0, r.w - 2), std::max(0, r.h - 2)};
+    a.scroll_scopes.push_back(ScrollScope{id, a.clip_rect});
     if (fn) fn();
+    if (!a.scroll_scopes.empty()) a.scroll_scopes.pop_back();
     a.clip_active = old_clip_active;
     a.clip_rect = old_clip;
     int used = a.cursor_y + (int)std::round(ss.current) - (r.y + 1);
@@ -9644,6 +9811,9 @@ void         set_style(const Style& s);
 const Style& get_style();
 Color        color_from_hex(const char* hex);
 Color        color_from_hex(std::string_view hex);
+void         push_color(ColorRole role, Color color);
+void         pop_color();
+void         set_next_color(ColorRole role, Color color);
 
 struct Config {
     const char* title = "FTHT App";
@@ -9683,6 +9853,8 @@ const char* method();
 bool is_post();
 const char* param(const char* name);
 void set_status(int code, const char* text);
+using CommandHandler = bool (*)(const char* command);
+void set_command_handler(CommandHandler handler);
 
 void html(const char* markup);
 void text(const char* label);
@@ -9691,9 +9863,11 @@ void separator();
 void spacing(float px = 8.0f);
 void toast(const char* message);
 void toast(const Toast& toast);
+void toast_info(const char* message);
 void toast_success(const char* message);
 void toast_warning(const char* message);
 void toast_error(const char* message);
+void clear_toasts();
 
 enum class InputFlags : unsigned {
     Default = 0,
@@ -9753,10 +9927,15 @@ bool dropdown(const char* label, const char* const* items, int count, int* selec
 bool listbox(const char* label, const char* const* items, int count, int* selected, int visible_rows = 6);
 bool radio_group(const char* label, const char* const* items, int count, int* selected, int columns = 1);
 bool collapsing_header(const char* label, bool* open = nullptr);
+bool side_menu(const char* label, const char* const* items, int count, int* selected);
+bool side_menu_drawer(const char* label, const char* const* items, int count, int* selected, float width = 260.0f);
 bool tabs(const char* const* labels, int count, int* selected);
 
 void row(int cols, std::function<void()> fn);
 void row(std::initializer_list<float> weights, std::function<void()> fn);
+void split(std::initializer_list<float> columns, std::function<void()> fn);
+void side_layout(float side_width, std::function<void()> fn);
+void content(std::function<void()> fn);
 void scroll_area(const char* label, float height, std::function<void()> fn);
 void set_next_width(float px);
 void set_next_fill();
@@ -9830,6 +10009,11 @@ struct NextLayoutState {
     Align align = Align::Start;
 };
 
+struct ColorOverride {
+    ColorRole role = ColorRole::Text;
+    Color color = {};
+};
+
 #if defined(ARDUINO) && defined(ESP32)
 struct ServerHandle {
     WiFiServer* server = nullptr;
@@ -9855,6 +10039,7 @@ struct ServerHandle {
 struct Context {
     Config cfg;
     Style style = one_dark_style();
+    CommandHandler command_handler = nullptr;
     ServerHandle net;
     std::string current_url;
     std::string req_method;
@@ -9869,6 +10054,8 @@ struct Context {
     std::string login_session_token;
     std::time_t login_session_until = 0;
     std::vector<ActiveToast> toasts;
+    std::vector<ColorOverride> color_stack;
+    std::vector<ColorOverride> next_colors;
     uint64_t next_toast_id = 1;
     std::string modal_label;
     std::string last_widget_id;
@@ -10249,15 +10436,39 @@ static const WebCommandSpec k_web_commands[] = {
     {"help", "show command help"},
     {"?", "show command help"},
     {"tab next", "next tab"},
+    {"tabn", "next tab"},
     {"tab prev", "previous tab"},
+    {"tab previous", "previous tab"},
+    {"tabp", "previous tab"},
     {"tn", "next tab"},
     {"tp", "previous tab"},
     {"theme dark", "dark theme"},
     {"theme light", "light theme"},
+    {"theme green", "green theme"},
+    {"theme amber", "amber theme"},
     {"theme one", "one dark theme"},
+    {"theme catppuccin", "catppuccin theme"},
+    {"theme nord", "nord theme"},
+    {"theme gruvbox", "gruvbox theme"},
+    {"theme ghostty", "ghostty theme"},
     {"td", "dark theme"},
+    {"tl", "light theme"},
+    {"green", "green theme"},
+    {"amber", "amber theme"},
     {"to", "one dark theme"},
+    {"tc", "catppuccin theme"},
+    {"tnord", "nord theme"},
+    {"tg", "gruvbox theme"},
+    {"th", "ghostty theme"},
     {"rr", "refresh"},
+    {"redraw", "refresh"},
+    {"refresh", "refresh"},
+    {"ct", "clear toasts"},
+    {"clear toasts", "clear toasts"},
+    {"web", "toggle web server"},
+    {"ws", "toggle web server"},
+    {"server", "toggle web server"},
+    {"webserver", "toggle web server"},
 };
 
 static std::string command_completion(std::string_view prefix) {
@@ -10279,10 +10490,15 @@ static bool command_is(std::string_view value, const char* a, const char* b = nu
 
 static bool execute_command(std::string_view raw) {
     Context& c = ctx();
-    std::string cmd = trim_copy(raw);
-    for (char& ch : cmd) ch = (char)std::tolower((unsigned char)ch);
-    if (!cmd.empty() && cmd[0] == ':') cmd.erase(cmd.begin());
-    cmd = trim_copy(cmd);
+    std::string typed = trim_copy(raw);
+    if (!typed.empty() && typed[0] == ':') typed.erase(typed.begin());
+    typed = trim_copy(typed);
+    if (typed.empty()) return false;
+    if (c.command_handler && c.command_handler(typed.c_str())) {
+        c.command_message = typed;
+        return true;
+    }
+    std::string cmd = lower_copy(typed);
     if (cmd.empty()) return false;
 
     if (command_is(cmd, "q", "quit", "exit") || command_is(cmd, "wq", "x")) {
@@ -10291,7 +10507,7 @@ static bool execute_command(std::string_view raw) {
         return true;
     }
     if (command_is(cmd, "help", "?")) {
-        c.command_message = "commands: q, help, theme dark/light/one, tab next, tab prev, rr";
+        c.command_message = "commands: q, help, theme dark/light/one/catppuccin/nord/gruvbox/ghostty, tab next, tab prev, rr, ct, web";
         queue_toast(ToastType::Info, "Commands", c.command_message.c_str(), 7000, true);
         return true;
     }
@@ -10309,14 +10525,28 @@ static bool execute_command(std::string_view raw) {
         queue_toast(ToastType::Success, "Command", "Theme set to one dark.");
         return true;
     }
-    if (command_is(cmd, "theme light")) {
+    if (command_is(cmd, "theme light", "tl")) {
         c.style = default_dark_style();
         c.cfg.dark_mode = false;
         c.command_message = "theme light";
         queue_toast(ToastType::Success, "Command", "Theme set to light.");
         return true;
     }
-    if (command_is(cmd, "tab next", "tn", "tabn") || command_is(cmd, "tab prev", "tp", "tabp")) {
+    if (command_is(cmd, "theme green", "green") ||
+        command_is(cmd, "theme amber", "amber") ||
+        command_is(cmd, "theme catppuccin", "tc") ||
+        command_is(cmd, "theme nord", "tnord") ||
+        command_is(cmd, "theme gruvbox", "tg") ||
+        command_is(cmd, "theme ghostty", "th")) {
+        c.style = one_dark_style();
+        c.cfg.dark_mode = true;
+        c.command_message = cmd;
+        queue_toast(ToastType::Info, "Command", "Theme alias accepted; web fallback uses one dark.");
+        return true;
+    }
+    if (command_is(cmd, "tab next", "tn", "tabn") ||
+        command_is(cmd, "tab prev", "tp", "tabp") ||
+        command_is(cmd, "tab previous")) {
         c.command_message = "tab commands are handled in the browser when possible";
         queue_toast(ToastType::Info, "Command", c.command_message.c_str(), 3600, true);
         return true;
@@ -10324,6 +10554,16 @@ static bool execute_command(std::string_view raw) {
     if (command_is(cmd, "rr", "redraw", "refresh")) {
         c.command_message = "refresh";
         queue_toast(ToastType::Success, "Command", "Refreshed.");
+        return true;
+    }
+    if (command_is(cmd, "ct", "clear toasts")) {
+        c.toasts.clear();
+        c.command_message = "clear toasts";
+        return true;
+    }
+    if (command_is(cmd, "web", "ws", "server") || command_is(cmd, "webserver")) {
+        c.command_message = "web server is already serving this session";
+        queue_toast(ToastType::Info, "Command", c.command_message.c_str(), 3600, true);
         return true;
     }
 
@@ -10738,9 +10978,54 @@ static std::string auto_submit_attr() {
     return ctx().cfg.auto_submit ? " data-ftht-auto=\"1\"" : "";
 }
 
+static void append_color_override_css(std::string& s, ColorRole role, Color color) {
+    std::string css = color_css(color);
+    switch (role) {
+        case ColorRole::Background:
+        case ColorRole::Panel:
+            s += "background:" + css + ";";
+            break;
+        case ColorRole::Text:
+            s += "color:" + css + ";";
+            break;
+        case ColorRole::TextDim:
+            s += "color:" + css + ";--muted:" + css + ";";
+            break;
+        case ColorRole::Border:
+            s += "border-color:" + css + ";--border:" + css + ";";
+            break;
+        case ColorRole::Button:
+            s += "background:" + css + ";--button:" + css + ";";
+            break;
+        case ColorRole::ButtonHover:
+            s += "--hover:" + css + ";";
+            break;
+        case ColorRole::ButtonActive:
+            s += "--active:" + css + ";";
+            break;
+        case ColorRole::InputBg:
+            s += "--input:" + css + ";";
+            break;
+        case ColorRole::InputFocus:
+            s += "--focus:" + css + ";";
+            break;
+        case ColorRole::Accent:
+            s += "--accent:" + css + ";";
+            break;
+        case ColorRole::Warning:
+            s += "--warning:" + css + ";";
+            break;
+        case ColorRole::Success:
+            s += "--success:" + css + ";";
+            break;
+    }
+}
+
 static std::string next_style() {
     Context& c = ctx();
     std::string s;
+    for (const ColorOverride& entry : c.color_stack) append_color_override_css(s, entry.role, entry.color);
+    for (const ColorOverride& entry : c.next_colors) append_color_override_css(s, entry.role, entry.color);
     if (c.next.has_width) {
         char buf[64];
         std::snprintf(buf, sizeof(buf), "width:%.1fpx;", c.next.width);
@@ -10762,6 +11047,7 @@ static std::string next_style() {
         if (c.next.align == Align::End) s += "margin-left:auto;";
     }
     c.next = NextLayoutState();
+    c.next_colors.clear();
     if (s.empty()) return "";
     return " style=\"" + s + "\"";
 }
@@ -11464,15 +11750,39 @@ static void append_client_script() {
     ["help", "show commands"],
     ["?", "show commands"],
     ["tab next", "next tab"],
+    ["tabn", "next tab"],
     ["tab prev", "previous tab"],
+    ["tab previous", "previous tab"],
+    ["tabp", "previous tab"],
     ["tn", "next tab"],
     ["tp", "previous tab"],
     ["theme dark", "dark theme"],
     ["theme light", "light theme"],
+    ["theme green", "green theme"],
+    ["theme amber", "amber theme"],
     ["theme one", "one dark theme"],
+    ["theme catppuccin", "catppuccin theme"],
+    ["theme nord", "nord theme"],
+    ["theme gruvbox", "gruvbox theme"],
+    ["theme ghostty", "ghostty theme"],
     ["td", "dark theme"],
+    ["tl", "light theme"],
+    ["green", "green theme"],
+    ["amber", "amber theme"],
     ["to", "one dark theme"],
-    ["rr", "refresh"]
+    ["tc", "catppuccin theme"],
+    ["tnord", "nord theme"],
+    ["tg", "gruvbox theme"],
+    ["th", "ghostty theme"],
+    ["rr", "refresh"],
+    ["redraw", "refresh"],
+    ["refresh", "refresh"],
+    ["ct", "clear toasts"],
+    ["clear toasts", "clear toasts"],
+    ["web", "toggle web server"],
+    ["ws", "toggle web server"],
+    ["server", "toggle web server"],
+    ["webserver", "toggle web server"]
   ];
 
   function main() { return document.querySelector("main"); }
@@ -11653,7 +11963,7 @@ static void append_client_script() {
     const cmd = String(value || "").trim().replace(/^:/, "");
     if (!cmd) return;
     const lower = cmd.toLowerCase();
-    if (lower === "tab next" || lower === "tn") {
+    if (lower === "tab next" || lower === "tn" || lower === "tabn") {
       const tabs = Array.from(document.querySelectorAll(".ft-tabs button"));
       const cur = tabs.findIndex(b => b.classList.contains("sel"));
       if (cur >= 0 && tabs.length) {
@@ -11661,7 +11971,7 @@ static void append_client_script() {
         return;
       }
     }
-    if (lower === "tab prev" || lower === "tp") {
+    if (lower === "tab prev" || lower === "tp" || lower === "tabp" || lower === "tab previous") {
       const tabs = Array.from(document.querySelectorAll(".ft-tabs button"));
       const cur = tabs.findIndex(b => b.classList.contains("sel"));
       if (cur >= 0 && tabs.length) {
@@ -11768,6 +12078,19 @@ Color color_from_hex(std::string_view hex) {
     return {1, 1, 1, 1};
 }
 
+void push_color(ColorRole role, Color color) {
+    internal::ctx().color_stack.push_back({role, color});
+}
+
+void pop_color() {
+    std::vector<internal::ColorOverride>& stack = internal::ctx().color_stack;
+    if (!stack.empty()) stack.pop_back();
+}
+
+void set_next_color(ColorRole role, Color color) {
+    internal::ctx().next_colors.push_back({role, color});
+}
+
 bool create_server(const Config& cfg) {
     using namespace internal;
     Context& c = ctx();
@@ -11777,6 +12100,8 @@ bool create_server(const Config& cfg) {
     c.login_session_token.clear();
     c.login_session_until = 0;
     c.toasts.clear();
+    c.color_stack.clear();
+    c.next_colors.clear();
     c.next_toast_id = 1;
     debugf("create_server title='%s' host='%s' port=%d max_request_bytes=%d read_timeout_ms=%d client_poll_ms=%d auto_submit=%d debug=%d client_debug=%d dark_mode=%d browser_dark=%d login_mode=%d login_idle_seconds=%d",
            cfg.title ? cfg.title : "", cfg.host ? cfg.host : "", cfg.port, cfg.max_request_bytes,
@@ -11943,6 +12268,10 @@ uint64_t make_login_password_hash(const char* password, const char* salt) {
     return internal::salted_password_hash(password ? password : "", salt ? salt : "");
 }
 
+void set_command_handler(CommandHandler handler) {
+    internal::ctx().command_handler = handler;
+}
+
 void set_status(int code, const char* text) {
     internal::ctx().status_code = code;
     internal::ctx().status_text = text ? text : "";
@@ -11980,6 +12309,13 @@ void toast(const Toast& value) {
     internal::queue_toast(value);
 }
 
+void toast_info(const char* message) {
+    Toast t;
+    t.type = ToastType::Info;
+    t.message = message ? message : "";
+    internal::queue_toast(t);
+}
+
 void toast_success(const char* message) {
     Toast t;
     t.type = ToastType::Success;
@@ -11999,6 +12335,10 @@ void toast_error(const char* message) {
     t.type = ToastType::Error;
     t.message = message ? message : "";
     internal::queue_toast(t);
+}
+
+void clear_toasts() {
+    internal::ctx().toasts.clear();
 }
 
 bool input(const char* label, char* buffer, int buffer_size, InputFlags flags, bool* enter_pressed) {
@@ -12249,6 +12589,14 @@ bool collapsing_header(const char* label, bool* open) {
     return is_open;
 }
 
+bool side_menu(const char* label, const char* const* items, int count, int* selected) {
+    return radio_group(label, items, count, selected, 1);
+}
+
+bool side_menu_drawer(const char* label, const char* const* items, int count, int* selected, float) {
+    return side_menu(label, items, count, selected);
+}
+
 bool tabs(const char* const* labels, int count, int* selected) {
     using namespace internal;
     std::string seed = "tabs";
@@ -12295,6 +12643,18 @@ void row(std::initializer_list<float> weights, std::function<void()> fn) {
     ctx().out += "\">";
     if (fn) fn();
     ctx().out += "</div>";
+}
+
+void split(std::initializer_list<float> columns, std::function<void()> fn) {
+    row(columns, fn);
+}
+
+void side_layout(float, std::function<void()> fn) {
+    if (fn) fn();
+}
+
+void content(std::function<void()> fn) {
+    if (fn) fn();
 }
 
 void scroll_area(const char* label, float height, std::function<void()> fn) {
@@ -12413,6 +12773,7 @@ using ToastType = ftui::ToastType;
 using LoginMode = ftht::LoginMode;
 using FileFilter = ftui::FileFilter;
 using DebugState = ftui::DebugState;
+using CommandHandler = bool (*)(const char* command);
 
 struct Style {
     Color background    = {0.055f, 0.055f, 0.059f, 1.0f};
@@ -12916,7 +13277,11 @@ inline bool create_backend(Mode mode, const Config& cfg) {
         if (ok) ftui::set_command_handler(toggle_webserver_command);
         return ok;
     }
-    if (mode == Mode::Tui) return ftti::create_window(to_tui_config(cfg));
+    if (mode == Mode::Tui) {
+        bool ok = ftti::create_window(to_tui_config(cfg));
+        if (ok) ftti::set_command_handler(toggle_webserver_command);
+        return ok;
+    }
     if (mode == Mode::Web) return ftht::create_server(to_web_config(cfg));
     return false;
 }
@@ -13058,6 +13423,12 @@ inline void set_quit_on_ctrl_q(bool enabled) {
     else if (detail::render_mode() == Mode::Tui) ftti::set_quit_on_ctrl_q(enabled);
 }
 
+inline void set_command_handler(CommandHandler handler) {
+    if (detail::render_mode() == Mode::Gui) ftui::set_command_handler(handler);
+    else if (detail::render_mode() == Mode::Tui) ftti::set_command_handler(handler);
+    else if (detail::render_mode() == Mode::Web) ftht::set_command_handler(handler);
+}
+
 inline void set_fps_limit(int fps) {
     if (detail::render_mode() == Mode::Gui) ftui::set_fps_limit(fps);
     else if (detail::render_mode() == Mode::Tui) ftti::set_fps_limit(fps);
@@ -13124,16 +13495,19 @@ inline Color color_from_hex(std::string_view hex) { return ftui::color_from_hex(
 inline void push_color(ColorRole role, Color color) {
     if (detail::render_mode() == Mode::Gui) ftui::push_color(role, color);
     else if (detail::render_mode() == Mode::Tui) ftti::push_color(detail::to_tui_role(role), detail::to_tui(color));
+    else if (detail::render_mode() == Mode::Web) ftht::push_color(detail::to_web_role(role), detail::to_web(color));
 }
 
 inline void pop_color() {
     if (detail::render_mode() == Mode::Gui) ftui::pop_color();
     else if (detail::render_mode() == Mode::Tui) ftti::pop_color();
+    else if (detail::render_mode() == Mode::Web) ftht::pop_color();
 }
 
 inline void set_next_color(ColorRole role, Color color) {
     if (detail::render_mode() == Mode::Gui) ftui::set_next_color(role, color);
     else if (detail::render_mode() == Mode::Tui) ftti::set_next_color(detail::to_tui_role(role), detail::to_tui(color));
+    else if (detail::render_mode() == Mode::Web) ftht::set_next_color(detail::to_web_role(role), detail::to_web(color));
 }
 
 inline void text(const char* label) {
@@ -13276,12 +13650,13 @@ inline bool collapsing_header(const char* label, bool* open = nullptr) {
 inline bool side_menu(const char* label, const char* const* items, int count, int* selected) {
     if (detail::render_mode() == Mode::Gui) return ftui::side_menu(label, items, count, selected);
     if (detail::render_mode() == Mode::Tui) return ftti::side_menu(label, items, count, selected);
-    if (detail::render_mode() == Mode::Web) return ftht::radio_group(label, items, count, selected, 1);
+    if (detail::render_mode() == Mode::Web) return ftht::side_menu(label, items, count, selected);
     return false;
 }
 
 inline bool side_menu_drawer(const char* label, const char* const* items, int count, int* selected, float width = 260.0f) {
     if (detail::render_mode() == Mode::Gui) return ftui::side_menu_drawer(label, items, count, selected, width);
+    if (detail::render_mode() == Mode::Web) return ftht::side_menu_drawer(label, items, count, selected, width);
     return side_menu(label, items, count, selected);
 }
 
@@ -13307,19 +13682,19 @@ inline void row(std::initializer_list<float> weights, std::function<void()> fn) 
 inline void split(std::initializer_list<float> columns, std::function<void()> fn) {
     if (detail::render_mode() == Mode::Gui) ftui::split(columns, fn);
     else if (detail::render_mode() == Mode::Tui) ftti::split(columns, fn);
-    else if (detail::render_mode() == Mode::Web) ftht::row(columns, fn);
+    else if (detail::render_mode() == Mode::Web) ftht::split(columns, fn);
 }
 
 inline void side_layout(float side_width, std::function<void()> fn) {
     if (detail::render_mode() == Mode::Gui) ftui::side_layout(side_width, fn);
     else if (detail::render_mode() == Mode::Tui) ftti::side_layout(side_width, fn);
-    else if (detail::render_mode() == Mode::Web) fn();
+    else if (detail::render_mode() == Mode::Web) ftht::side_layout(side_width, fn);
 }
 
 inline void content(std::function<void()> fn) {
     if (detail::render_mode() == Mode::Gui) ftui::content(fn);
     else if (detail::render_mode() == Mode::Tui) ftti::content(fn);
-    else if (detail::render_mode() == Mode::Web) fn();
+    else if (detail::render_mode() == Mode::Web) ftht::content(fn);
 }
 
 inline void scroll_area(const char* label, float height, std::function<void()> fn) {
@@ -13449,6 +13824,7 @@ inline void toast_error(const char* message) { Toast t; t.message = message; t.t
 inline void clear_toasts() {
     if (detail::render_mode() == Mode::Gui) ftui::clear_toasts();
     else if (detail::render_mode() == Mode::Tui) ftti::clear_toasts();
+    else if (detail::render_mode() == Mode::Web) ftht::clear_toasts();
 }
 
 inline void progress_bar(float progress) {

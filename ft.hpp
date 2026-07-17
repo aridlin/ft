@@ -99,6 +99,9 @@ namespace ftui {
 
 enum class Align { Start, Center, End };
 
+static constexpr int KeyEnter = 13;
+static constexpr int KeyNumpad0 = 96;
+
 struct Color { float r, g, b, a; };
 
 struct Style {

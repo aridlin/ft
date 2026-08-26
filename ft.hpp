@@ -7583,8 +7583,8 @@ static bool prepare_console(App& a) {
         }
 
         // GUI-subsystem applications do not get usable CRT console streams even
-        // after AttachConsole. Rebind them so _kbhit/_getch and normal diagnostics
-        // use the console selected above.
+        // after AttachConsole. Rebind them so diagnostics and standard I/O use the
+        // console selected above; input events are read from the native handle.
         if (!std::freopen("CONIN$", "r", stdin)) return false;
         if (!std::freopen("CONOUT$", "w", stdout)) return false;
         (void)std::freopen("CONOUT$", "w", stderr);
@@ -7600,7 +7600,10 @@ static bool prepare_console(App& a) {
                                ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
         return false;
     }
-    if (!SetConsoleMode(a.in_handle, ENABLE_PROCESSED_INPUT)) {
+    DWORD input_mode = ENABLE_PROCESSED_INPUT | ENABLE_WINDOW_INPUT | ENABLE_EXTENDED_FLAGS;
+    if (a.cfg.enable_mouse) input_mode |= ENABLE_MOUSE_INPUT;
+    input_mode &= ~ENABLE_QUICK_EDIT_MODE;
+    if (!SetConsoleMode(a.in_handle, input_mode)) {
         SetConsoleMode(a.out, a.old_out_mode);
         return false;
     }
@@ -8184,26 +8187,81 @@ static void push_text_char(char ch) {
 #if defined(_WIN32)
 static void read_input() {
     App& a = app();
-    while (_kbhit()) {
-        int c = _getch();
-        if (c == 0 || c == 224) {
-            int k = _getch();
-            if (k == 72) a.in.up = true;
-            else if (k == 80) a.in.down = true;
-            else if (k == 75) a.in.left = true;
-            else if (k == 77) a.in.right = true;
-            continue;
+    DWORD pending = 0;
+    if (!GetNumberOfConsoleInputEvents(a.in_handle, &pending)) return;
+
+    while (pending > 0) {
+        INPUT_RECORD records[64] = {};
+        DWORD read = 0;
+        const DWORD wanted = std::min<DWORD>(pending, (DWORD)(sizeof(records) / sizeof(records[0])));
+        if (!ReadConsoleInputW(a.in_handle, records, wanted, &read) || read == 0) break;
+
+        for (DWORD i = 0; i < read; ++i) {
+            const INPUT_RECORD& record = records[i];
+            if (record.EventType == KEY_EVENT) {
+                const KEY_EVENT_RECORD& key = record.Event.KeyEvent;
+                if (!key.bKeyDown) continue;
+                const DWORD controls = key.dwControlKeyState;
+                const bool shift = (controls & SHIFT_PRESSED) != 0;
+                const bool ctrl = (controls & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0;
+                const WORD vk = key.wVirtualKeyCode;
+
+                if (ctrl && (vk == 'Q' || key.uChar.UnicodeChar == 17)) a.in.ctrl_q = true;
+                else if (vk == VK_TAB) {
+                    if (shift) a.in.shift_tab = true;
+                    else a.in.tab = true;
+                } else if (vk == VK_RETURN) a.in.enter = true;
+                else if (vk == VK_ESCAPE) a.in.escape = true;
+                else if (vk == VK_BACK) a.in.backspace = true;
+                else if (vk == VK_LEFT) a.in.left = true;
+                else if (vk == VK_RIGHT) a.in.right = true;
+                else if (vk == VK_UP) a.in.up = true;
+                else if (vk == VK_DOWN) a.in.down = true;
+                else {
+                    const wchar_t wc = key.uChar.UnicodeChar;
+                    if (wc == L' ') a.in.space = true;
+                    if (wc >= 32 && wc < 127) {
+                        const WORD repeats = std::max<WORD>(1, key.wRepeatCount);
+                        for (WORD repeat = 0; repeat < repeats; ++repeat) push_text_char((char)wc);
+                    }
+                }
+                continue;
+            }
+
+            if (record.EventType == MOUSE_EVENT) {
+                const MOUSE_EVENT_RECORD& mouse = record.Event.MouseEvent;
+                CONSOLE_SCREEN_BUFFER_INFO info = {};
+                int origin_x = 0;
+                int origin_y = 0;
+                if (GetConsoleScreenBufferInfo(a.out, &info)) {
+                    origin_x = info.srWindow.Left;
+                    origin_y = info.srWindow.Top;
+                }
+                a.in.mouse_x = (int)mouse.dwMousePosition.X - origin_x;
+                a.in.mouse_y = (int)mouse.dwMousePosition.Y - origin_y;
+                a.in.mouse_event = true;
+
+                if (mouse.dwEventFlags == MOUSE_WHEELED) {
+                    const SHORT delta = (SHORT)HIWORD(mouse.dwButtonState);
+                    if (delta != 0) a.in.wheel = delta < 0 ? 1 : -1;
+                } else if (mouse.dwEventFlags == 0 || mouse.dwEventFlags == DOUBLE_CLICK) {
+                    const bool left_down = (mouse.dwButtonState & FROM_LEFT_1ST_BUTTON_PRESSED) != 0;
+                    if (left_down && !a.mouse_down) a.in.mouse_pressed = true;
+                    if (!left_down && a.mouse_down) a.in.mouse_released = true;
+                    a.mouse_down = left_down;
+                    a.in.mouse_down = left_down;
+                } else if (mouse.dwEventFlags == MOUSE_MOVED) {
+                    const bool left_down = (mouse.dwButtonState & FROM_LEFT_1ST_BUTTON_PRESSED) != 0;
+                    a.mouse_down = left_down;
+                    a.in.mouse_down = left_down;
+                }
+                continue;
+            }
+
+            if (record.EventType == WINDOW_BUFFER_SIZE_EVENT) a.redraw = true;
         }
-        if (c == 17) a.in.ctrl_q = true;
-        else if (c == 9) a.in.tab = true;
-        else if (c == 13) a.in.enter = true;
-        else if (c == 27) a.in.escape = true;
-        else if (c == 8) a.in.backspace = true;
-        else if (c == ' ') {
-            a.in.space = true;
-            push_text_char(' ');
-        }
-        else if (c >= 32 && c < 127) push_text_char((char)c);
+
+        if (!GetNumberOfConsoleInputEvents(a.in_handle, &pending)) break;
     }
 }
 #else

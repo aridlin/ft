@@ -7384,6 +7384,7 @@ int terminal_height();
 #define NOMINMAX
 #endif
 #include <conio.h>
+#include <io.h>
 #include <windows.h>
 #ifdef min
 #undef min
@@ -7552,6 +7553,60 @@ static App& app() {
     static App a;
     return a;
 }
+
+#if defined(_WIN32)
+static bool get_console_handles(HANDLE& out, HANDLE& in_handle,
+                                DWORD& out_mode, DWORD& in_mode) {
+    out = GetStdHandle(STD_OUTPUT_HANDLE);
+    in_handle = GetStdHandle(STD_INPUT_HANDLE);
+    if (out == nullptr || out == INVALID_HANDLE_VALUE ||
+        in_handle == nullptr || in_handle == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    return GetConsoleMode(out, &out_mode) != 0 &&
+           GetConsoleMode(in_handle, &in_mode) != 0;
+}
+
+static bool prepare_console(App& a) {
+    HANDLE out = INVALID_HANDLE_VALUE;
+    HANDLE in_handle = INVALID_HANDLE_VALUE;
+    DWORD out_mode = 0;
+    DWORD in_mode = 0;
+    const bool handles_ready = get_console_handles(out, in_handle, out_mode, in_mode);
+    const bool crt_ready = _isatty(_fileno(stdin)) != 0 &&
+                           _isatty(_fileno(stdout)) != 0;
+
+    if (!handles_ready || !crt_ready) {
+        if (!handles_ready && !AttachConsole(ATTACH_PARENT_PROCESS)) {
+            const DWORD attach_error = GetLastError();
+            if (attach_error != ERROR_ACCESS_DENIED && !AllocConsole()) return false;
+        }
+
+        // GUI-subsystem applications do not get usable CRT console streams even
+        // after AttachConsole. Rebind them so _kbhit/_getch and normal diagnostics
+        // use the console selected above.
+        if (!std::freopen("CONIN$", "r", stdin)) return false;
+        if (!std::freopen("CONOUT$", "w", stdout)) return false;
+        (void)std::freopen("CONOUT$", "w", stderr);
+
+        if (!get_console_handles(out, in_handle, out_mode, in_mode)) return false;
+    }
+
+    a.out = out;
+    a.in_handle = in_handle;
+    a.old_out_mode = out_mode;
+    a.old_in_mode = in_mode;
+    if (!SetConsoleMode(a.out, out_mode | ENABLE_PROCESSED_OUTPUT |
+                               ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
+        return false;
+    }
+    if (!SetConsoleMode(a.in_handle, ENABLE_PROCESSED_INPUT)) {
+        SetConsoleMode(a.out, a.old_out_mode);
+        return false;
+    }
+    return true;
+}
+#endif
 
 static int clamp_i(int v, int lo, int hi) {
     return std::max(lo, std::min(hi, v));
@@ -8576,8 +8631,8 @@ bool create_window(const Config& cfg) {
     App& a = app();
     a.cfg = cfg;
     a.style = FTTI_DEFAULT_STYLE();
-    a.running = true;
-    a.initialized = true;
+    a.running = false;
+    a.initialized = false;
     a.redraw = true;
     a.page_scroll_current = 0.0f;
     a.page_scroll_target = 0.0f;
@@ -8587,12 +8642,7 @@ bool create_window(const Config& cfg) {
     a.start_time = std::chrono::steady_clock::now();
     a.last_frame = a.start_time;
 #if defined(_WIN32)
-    a.out = GetStdHandle(STD_OUTPUT_HANDLE);
-    a.in_handle = GetStdHandle(STD_INPUT_HANDLE);
-    GetConsoleMode(a.out, &a.old_out_mode);
-    GetConsoleMode(a.in_handle, &a.old_in_mode);
-    SetConsoleMode(a.out, a.old_out_mode | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
-    SetConsoleMode(a.in_handle, ENABLE_PROCESSED_INPUT);
+    if (!prepare_console(a)) return false;
 #else
     if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) return false;
     tcgetattr(STDIN_FILENO, &a.old_term);
@@ -8605,6 +8655,8 @@ bool create_window(const Config& cfg) {
     a.old_flags = fcntl(STDIN_FILENO, F_GETFL, 0);
     fcntl(STDIN_FILENO, F_SETFL, a.old_flags | O_NONBLOCK);
 #endif
+    a.running = true;
+    a.initialized = true;
     if (cfg.alternate_screen) write_raw("\x1b[?1049h");
     write_raw("\x1b[?25l\x1b[2J\x1b[H");
     if (cfg.enable_mouse) write_raw("\x1b[?1000h\x1b[?1003h\x1b[?1006h");

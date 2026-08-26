@@ -149,16 +149,18 @@ launcher when runtime backend selection is required. The bundled demos use
 
 ### `--tui` Notes
 
-`--tui` requires a real interactive terminal. It works from a terminal or PTY:
+On Linux and macOS, `--tui` requires a real interactive terminal. It works from
+a terminal or PTY:
 
 ```bash
 build/ft_combined_smoke --tui
 ```
 
-It can fail or appear to do nothing when launched from a file explorer, desktop
-launcher, or process manager that does not attach stdin/stdout to a terminal.
-For file-explorer launches on a desktop, use auto mode or `--gui`. For browser
-mode, use `--web`.
+On Windows, forced TUI mode also works in GUI-subsystem applications: FT attaches
+to the parent console and rebinds the process streams. If there is no parent
+console (for example, a file-explorer launch), FT creates one. Auto mode still
+selects TUI only when the process starts with a usable terminal. For browser mode,
+use `--web`.
 
 ## App Lifecycle
 
@@ -793,16 +795,16 @@ Check these first:
    `ft::create_window(argc, argv, cfg)`.
 2. The program must be a combined `ft::` app. Direct `ftui::` programs ignore
    combined launch flags.
-3. The process must have a real interactive terminal attached. File explorer
-   launches usually do not.
+3. On Linux and macOS, the process must have a real interactive terminal
+   attached. On Windows, forced TUI mode attaches to the parent console or
+   creates one.
 4. Run from a terminal to test:
 
 ```bash
 build/ft_combined_smoke --tui
 ```
 
-If that renders, the flag works and the failed launch context probably had no
-usable TTY.
+If that renders, argument routing and the terminal backend are both working.
 
 ### TUI Scrolling Does Not Move
 

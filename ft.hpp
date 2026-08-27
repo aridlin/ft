@@ -7517,6 +7517,7 @@ struct App {
     std::vector<TabState> tabs;
     std::vector<ToastState> toasts;
     std::vector<std::string> graphics_commands;
+    std::string last_output;
     std::vector<std::pair<ColorRole, Color>> color_stack;
     std::string pending_tooltip;
     Rect pending_tooltip_anchor;
@@ -8726,6 +8727,7 @@ bool create_window(const Config& cfg) {
     a.running = false;
     a.initialized = false;
     a.redraw = true;
+    a.last_output.clear();
     a.page_scroll_current = 0.0f;
     a.page_scroll_target = 0.0f;
     a.page_content_height = 0.0f;
@@ -8887,7 +8889,11 @@ void end() {
     }
     out += "\x1b[0m";
     for (const std::string& cmd : a.graphics_commands) out += cmd;
-    write_raw(out);
+    if (a.redraw || out != a.last_output) {
+        write_raw(out);
+        a.last_output = out;
+    }
+    a.redraw = false;
 }
 
 void shutdown() {
@@ -8911,6 +8917,7 @@ void shutdown() {
     a.running = false;
     a.began = false;
     a.initialized = false;
+    a.last_output.clear();
 }
 
 void request_redraw() {

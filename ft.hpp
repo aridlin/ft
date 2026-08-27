@@ -7543,6 +7543,7 @@ struct App {
     HANDLE in_handle = INVALID_HANDLE_VALUE;
     DWORD old_out_mode = 0;
     DWORD old_in_mode = 0;
+    bool owns_console = false;
 #else
     termios old_term = {};
     int old_flags = 0;
@@ -7567,6 +7568,16 @@ static bool get_console_handles(HANDLE& out, HANDLE& in_handle,
            GetConsoleMode(in_handle, &in_mode) != 0;
 }
 
+static bool is_gui_subsystem_process() {
+    const auto* base = reinterpret_cast<const unsigned char*>(GetModuleHandleW(nullptr));
+    if (!base) return false;
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    return nt->Signature == IMAGE_NT_SIGNATURE &&
+           nt->OptionalHeader.Subsystem == IMAGE_SUBSYSTEM_WINDOWS_GUI;
+}
+
 static bool prepare_console(App& a) {
     HANDLE out = INVALID_HANDLE_VALUE;
     HANDLE in_handle = INVALID_HANDLE_VALUE;
@@ -7575,21 +7586,44 @@ static bool prepare_console(App& a) {
     const bool handles_ready = get_console_handles(out, in_handle, out_mode, in_mode);
     const bool crt_ready = _isatty(_fileno(stdin)) != 0 &&
                            _isatty(_fileno(stdout)) != 0;
+    bool rebind_streams = false;
+    a.owns_console = false;
 
-    if (!handles_ready || !crt_ready) {
+    if (is_gui_subsystem_process()) {
+        // Shells do not wait for GUI-subsystem executables. Sharing their console
+        // would leave the shell running and competing with the TUI for input, so
+        // use a dedicated console that belongs exclusively to this process.
+        (void)FreeConsole();
+        if (!AllocConsole()) return false;
+        a.owns_console = true;
+        rebind_streams = true;
+    } else if (!handles_ready || !crt_ready) {
         if (!handles_ready && !AttachConsole(ATTACH_PARENT_PROCESS)) {
             const DWORD attach_error = GetLastError();
-            if (attach_error != ERROR_ACCESS_DENIED && !AllocConsole()) return false;
+            if (attach_error != ERROR_ACCESS_DENIED) {
+                if (!AllocConsole()) return false;
+                a.owns_console = true;
+            }
         }
+        rebind_streams = true;
+    }
 
-        // GUI-subsystem applications do not get usable CRT console streams even
-        // after AttachConsole. Rebind them so diagnostics and standard I/O use the
-        // console selected above; input events are read from the native handle.
-        if (!std::freopen("CONIN$", "r", stdin)) return false;
-        if (!std::freopen("CONOUT$", "w", stdout)) return false;
+    if (rebind_streams) {
+        // AttachConsole/AllocConsole do not repair the C runtime streams in every
+        // launch context. Rebind them; input events use the native console handle.
+        if (!std::freopen("CONIN$", "r", stdin) ||
+            !std::freopen("CONOUT$", "w", stdout)) {
+            if (a.owns_console) (void)FreeConsole();
+            a.owns_console = false;
+            return false;
+        }
         (void)std::freopen("CONOUT$", "w", stderr);
 
-        if (!get_console_handles(out, in_handle, out_mode, in_mode)) return false;
+        if (!get_console_handles(out, in_handle, out_mode, in_mode)) {
+            if (a.owns_console) (void)FreeConsole();
+            a.owns_console = false;
+            return false;
+        }
     }
 
     a.out = out;
@@ -8868,6 +8902,8 @@ void shutdown() {
 #if defined(_WIN32)
     if (a.out != INVALID_HANDLE_VALUE) SetConsoleMode(a.out, a.old_out_mode);
     if (a.in_handle != INVALID_HANDLE_VALUE) SetConsoleMode(a.in_handle, a.old_in_mode);
+    if (a.owns_console) (void)FreeConsole();
+    a.owns_console = false;
 #else
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &a.old_term);
     fcntl(STDIN_FILENO, F_SETFL, a.old_flags);

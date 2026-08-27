@@ -156,11 +156,12 @@ a terminal or PTY:
 build/ft_combined_smoke --tui
 ```
 
-On Windows, forced TUI mode also works in GUI-subsystem applications: FT attaches
-to the parent console and rebinds the process streams. If there is no parent
-console (for example, a file-explorer launch), FT creates one. Auto mode still
-selects TUI only when the process starts with a usable terminal. For browser mode,
-use `--web`.
+On Windows, forced TUI mode also works in GUI-subsystem applications. FT gives
+those apps a dedicated console, because PowerShell and Windows Terminal do not
+wait for GUI executables and would otherwise compete with the TUI for keyboard
+and mouse input. Console-subsystem apps keep using their attached terminal. Auto
+mode still selects TUI only when the process starts with a usable terminal. For
+browser mode, use `--web`.
 
 ## App Lifecycle
 
@@ -796,8 +797,8 @@ Check these first:
 2. The program must be a combined `ft::` app. Direct `ftui::` programs ignore
    combined launch flags.
 3. On Linux and macOS, the process must have a real interactive terminal
-   attached. On Windows, forced TUI mode attaches to the parent console or
-   creates one.
+   attached. On Windows, GUI-subsystem apps get a dedicated console so their
+   parent shell cannot consume the TUI input.
 4. Run from a terminal to test:
 
 ```bash

@@ -865,3 +865,131 @@ build/
 
 The public repo name is `ft`, and the header remains explicit that it is the
 combined FT family build.
+
+## Context menus, tables, and clipboard
+
+See `examples/ft_data_widgets.cpp` (`build/ft_data_widgets --gui`, `--tui`, or
+`--web`). The regular demo build script includes it.
+
+Attach a context menu immediately after its target widget. Each call returns an
+item index when activated, or `-1`. Keep the ID stable and unique. Items are copied
+for rendering, so the item array can be local to the frame.
+
+```cpp
+ft::button("Document");
+ft::ContextMenuItem actions[] = {
+    {"Copy", true},
+    {"Unavailable action", false},
+    {"", true, false, true}, // separator
+    {"Show details", true, show_details, false, true} // checkable action
+};
+ft::ContextMenuOptions menu;
+menu.enabled = enable_menus;
+menu.right_click = true;
+menu.keyboard = true;
+menu.width = 240;
+menu.visible_rows = 8;
+int action = ft::context_menu("Document actions", actions, 4, menu);
+if (action == 3) show_details = !show_details;
+```
+
+GUI menus appear at full size and opacity on the opening frame, briefly expand
+by 2.5%, then settle over 120 ms. Hover feedback and click targets stay immediate
+and stable during the pulse. Set `menu.animation_seconds = 0` or `menu.overshoot = 0`
+to disable it; native disabled effects and browser reduced-motion settings also
+suppress animation. Check marks and table sort arrows are drawn graphics (SVG in
+web mode). Terminal toggles use explicit on/off text and selection uses color.
+
+The default scope attaches to the preceding widget. To attach to any custom
+region, or provide actions anywhere in the window, set a scope:
+
+```cpp
+menu.scope = ft::ContextMenuScope::Region;
+menu.region = {100, 80, 300, 200}; // x, y, width, height in client coordinates
+ft::context_menu("Canvas actions", actions, 4, menu);
+
+// Call this after specific menus, before ft::end(), as a window-wide fallback.
+menu.scope = ft::ContextMenuScope::Window;
+ft::context_menu("Window actions", actions, 4, menu);
+```
+
+The first matching menu consumes the trigger; put specific menus before the
+window fallback. Menus are clamped to the entire window, including when opened
+inside a scroll area. GUI menus support Shift+F10, arrow navigation, Enter,
+Escape, outside-click dismissal, wheel scrolling and compact separators. For
+regions, Shift+F10 uses the region under the pointer. Pass `true` as the last
+argument to open programmatically. Web menus retain an accessible summary and
+render above content with the same short pulse, keyboard navigation, and scope
+behavior; handlers survive automatic page updates. The terminal backend uses a
+keyboard-accessible action list. Pixel regions and animation apply to GUI/web.
+Custom menus are opt-in; existing input shortcuts continue to work.
+
+Tables accept owning UTF-8 strings and preserve source row indices when sorted:
+
+```cpp
+ft::TableRows records = {{"Alice", "Ready"}, {"Bob", "Waiting"}};
+ft::TableState state; // retain between frames
+ft::TableOptions options;
+options.visible_rows = 8;
+ft::table("People", {"Name", "Status"}, records, state, options);
+// state.selected_row indexes records, not the sorted display.
+```
+
+Click a column header to sort lexicographically; click again to reverse. Equal
+values retain input order. Short rows have empty cells; extra cells get unnamed
+columns. Options can hide headers or disable sorting and alternating row shading.
+GUI tables have fixed headers, clipped equal-width columns, wheel scrolling and
+Up/Down selection. Web and terminal tables use Previous/Next pagination and select
+rows through the first cell. The return value reports a selection or sort change.
+`TableState::first_row` is the first displayed row in sorted order. Keep separate
+state for each table; if your application inserts/reorders records, update its
+selection to match the new source indices. Sorting is textual, including numbers.
+
+```cpp
+ft::set_clipboard_text("int main() { return 0; }"); // reports write success
+std::string source = ft::get_clipboard_text();
+ft::code_view("Source", source.c_str(), 10);
+// Retain this state; clipboard reads happen only when the user clicks Read.
+ft::ClipboardViewState clipboard;
+ft::clipboard_view("Clipboard", clipboard, 10);
+```
+
+`code_view` displays selectable plain source without interpreting markup or
+syntax highlighting. The GUI uses a monospace font. `clipboard_view` shows a
+snapshot with Read/Copy controls. The native functions are also available through
+`ftui::`. Native clipboard access requires an open window. An empty read can mean
+empty text or unavailable data; the API handles text, not images or file lists.
+Linux uses the X11 CLIPBOARD selection (including XWayland) without overwriting
+PRIMARY; the app must continue pumping events to serve copied text. X11
+incremental transfers are not currently supported.
+
+Web clipboard viewing runs in the browser and does not send clipboard contents
+to the server. Browser permission and HTTPS/localhost rules apply, and failures
+are displayed in the viewer. Synchronous `get_clipboard_text`/`set_clipboard_text`
+do not access a remote browser clipboard or the server desktop. For non-GUI
+integration, install callbacks explicitly for that backend:
+
+```cpp
+ft::set_clipboard_handlers(ft::Mode::Tui, {
+    []() -> std::string { return my_host_read_clipboard(); },
+    [](const char* text) -> bool { return my_host_write_clipboard(text); }
+});
+```
+
+Callbacks override the public facade's clipboard access for the specified mode.
+`clipboard_can_read()` / `clipboard_can_write()` report available integration,
+not a guarantee that an OS operation or browser permission will succeed. Terminal
+copying can alternatively be enabled with
+`ft::enable_terminal_clipboard_osc52()`. It writes base64-encoded OSC 52 sequences;
+the terminal must support and permit them. Successful output cannot confirm that
+the terminal accepted the copy. Terminal clipboard reading requires a callback.
+Callbacks are independent between backends, including web mirror mode.
+
+Run the regression checks:
+
+```sh
+c++ tests/data_widgets.cpp -o build/data_widgets_test -std=c++17 $(pkg-config --cflags --libs cairo x11) -pthread
+build/data_widgets_test
+node tests/context_menu_web.js # uses the fixture from the test above
+build/ft_combined_smoke --self-test
+```

@@ -2321,39 +2321,46 @@ static void write_premul_bgra(std::vector<unsigned char>& px, int w, int h, int 
     px[p + 3] = byte01(c.a);
 }
 
-static void build_soft_dither_tile(int cell, std::vector<unsigned char>& px, int& tile_w, int& tile_h) {
-    cell = cell < 1 ? 1 : (cell > 32 ? 32 : cell);
-    const int cells = 16;
-    tile_w = cell * cells;
-    tile_h = tile_w;
+// Generate at device resolution: motif size affects grain distribution, never
+// the size of a magnified bitmap pixel. A longer repeat avoids visible 64px seams.
+static void build_soft_dither_tile(int cell, std::vector<unsigned char>& px, int& tile_w, int& tile_h,
+                                   float device_scale = 1.0f) {
+    cell = std::max(1, std::min(32, cell));
+    device_scale = std::isfinite(device_scale) ? clampf(device_scale, 1.0f, 4.0f) : 1.0f;
+    const int cells = std::max(8, (256 + cell - 1) / cell);
+    const int logical_size = cell * cells;
+    tile_w = tile_h = 8 * (int)std::ceil(logical_size * device_scale / 8.0f);
     px.assign((size_t)tile_w * (size_t)tile_h * 4u, 0);
 
+    static const unsigned char bayer[8][8] = {
+        {0,48,12,60,3,51,15,63}, {32,16,44,28,35,19,47,31},
+        {8,56,4,52,11,59,7,55}, {40,24,36,20,43,27,39,23},
+        {2,50,14,62,1,49,13,61}, {34,18,46,30,33,17,45,29},
+        {10,58,6,54,9,57,5,53}, {42,26,38,22,41,25,37,21}
+    };
     Color accent = resolve_color(ColorRole::Accent);
     Color dim = resolve_color(ColorRole::TextDim);
-    for (int gy = 0; gy < cells; ++gy) {
-        for (int gx = 0; gx < cells; ++gx) {
-            unsigned h = soft_dither_hash((unsigned)gx, (unsigned)gy);
-            float t = (float)(h & 255u) / 255.0f;
-            Color c = lerp_color(dim, accent, 0.24f + t * 0.56f);
-            c.a = 0.030f + t * 0.050f;
-
-            int sx = gx * cell + (int)((h >> 8) % (unsigned)cell);
-            int sy = gy * cell + (int)((h >> 13) % (unsigned)cell);
-            int len = cell <= 2 ? 1 : (cell * 3) / 4;
-            for (int k = 0; k < len; ++k) {
-                int x = gx * cell + ((sx - gx * cell + k) % cell);
-                int y = gy * cell + ((sy - gy * cell + (k / 2)) % cell);
-                write_premul_bgra(px, tile_w, tile_h, x, y, c);
-                if (cell >= 7 && (k & 1) == 0) write_premul_bgra(px, tile_w, tile_h, x + 1, y, with_alpha(c, c.a * 0.55f));
-            }
-
-            if (((h >> 21) & 3u) == 0u) {
-                Color dot = lerp_color(dim, accent, 0.72f);
-                dot.a = 0.055f + t * 0.030f;
-                int dx = gx * cell + (int)((h >> 24) % (unsigned)cell);
-                int dy = gy * cell + (int)((h >> 28) % (unsigned)cell);
-                write_premul_bgra(px, tile_w, tile_h, dx, dy, dot);
-            }
+    auto noise = [cells](int x, int y) {
+        return (soft_dither_hash((unsigned)(x % cells), (unsigned)(y % cells)) & 65535u) / 65535.0f;
+    };
+    for (int y = 0; y < tile_h; ++y) {
+        float gy = (float)y * cells / tile_h;
+        int iy = (int)gy;
+        float fy = gy - iy; fy = fy * fy * (3.0f - 2.0f * fy);
+        for (int x = 0; x < tile_w; ++x) {
+            float gx = (float)x * cells / tile_w;
+            int ix = (int)gx;
+            float fx = gx - ix; fx = fx * fx * (3.0f - 2.0f * fx);
+            float top = noise(ix,iy) * (1-fx) + noise(ix+1,iy) * fx;
+            float bottom = noise(ix,iy+1) * (1-fx) + noise(ix+1,iy+1) * fx;
+            float density = 0.22f + 0.16f * (top * (1-fy) + bottom * fy);
+            unsigned h = soft_dither_hash((unsigned)x, (unsigned)y);
+            float jitter = (float)(h & 255u) / 255.0f;
+            float threshold = (bayer[y & 7][x & 7] + 0.5f) / 64.0f;
+            if (threshold + (jitter - 0.5f) * 0.18f >= density) continue;
+            Color c = lerp_color(dim, accent, 0.12f + jitter * 0.16f);
+            c.a = 0.035f + jitter * 0.025f;
+            write_premul_bgra(px, tile_w, tile_h, x, y, c);
         }
     }
 }
@@ -2726,6 +2733,7 @@ static UINT           g_prev_frame_w = 0, g_prev_frame_h = 0;
 static ID2D1Bitmap*      g_dither_bitmap = nullptr;
 static ID2D1BitmapBrush* g_dither_brush = nullptr;
 static int               g_dither_cache_cell = 0;
+static float             g_dither_cache_scale = 0.0f;
 static Color             g_dither_cache_accent = {};
 static Color             g_dither_cache_dim = {};
 
@@ -2776,36 +2784,39 @@ static void release_dither_cache() {
     if (g_dither_brush) { g_dither_brush->Release(); g_dither_brush = nullptr; }
     if (g_dither_bitmap) { g_dither_bitmap->Release(); g_dither_bitmap = nullptr; }
     g_dither_cache_cell = 0;
+    g_dither_cache_scale = 0.0f;
     g_dither_cache_accent = {};
     g_dither_cache_dim = {};
 }
 static bool ensure_dither_brush() {
     if (!g_renderer.target) return false;
     int cell = g_dither_size < 1 ? 1 : (g_dither_size > 32 ? 32 : g_dither_size);
+    float scale = clampf(g_renderer.dpi_scale, 1.0f, 4.0f);
     Color accent = resolve_color(ColorRole::Accent);
     Color dim = resolve_color(ColorRole::TextDim);
-    if (g_dither_brush && g_dither_bitmap && g_dither_cache_cell == cell &&
+    if (g_dither_brush && g_dither_bitmap && g_dither_cache_cell == cell && g_dither_cache_scale == scale &&
         style_eq(g_dither_cache_accent, accent) && style_eq(g_dither_cache_dim, dim)) {
         return true;
     }
     release_dither_cache();
     std::vector<unsigned char> px;
     int tw = 0, th = 0;
-    build_soft_dither_tile(cell, px, tw, th);
+    build_soft_dither_tile(cell, px, tw, th, scale);
     if (px.empty() || tw <= 0 || th <= 0) return false;
 
     D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
         D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
-        96.0f, 96.0f);
+        96.0f * scale, 96.0f * scale);
     HRESULT hr = g_renderer.target->CreateBitmap(D2D1::SizeU((UINT32)tw, (UINT32)th),
                                                  px.data(), (UINT32)tw * 4u,
                                                  props, &g_dither_bitmap);
     if (FAILED(hr) || !g_dither_bitmap) { release_dither_cache(); return false; }
     D2D1_BITMAP_BRUSH_PROPERTIES bp = D2D1::BitmapBrushProperties(
-        D2D1_EXTEND_MODE_WRAP, D2D1_EXTEND_MODE_WRAP, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+        D2D1_EXTEND_MODE_WRAP, D2D1_EXTEND_MODE_WRAP, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     hr = g_renderer.target->CreateBitmapBrush(g_dither_bitmap, bp, &g_dither_brush);
     if (FAILED(hr) || !g_dither_brush) { release_dither_cache(); return false; }
     g_dither_cache_cell = cell;
+    g_dither_cache_scale = scale;
     g_dither_cache_accent = accent;
     g_dither_cache_dim = dim;
     return true;
@@ -2815,7 +2826,7 @@ static void draw_dither_pattern(Rect r, float opacity) {
     r = apply_draw_rect(r);
     g_dither_brush->SetOpacity(clamp01(opacity));
     D2D1_RECT_F rc = {r.x, r.y, r.x + r.w, r.y + r.h};
-    g_renderer.target->FillRectangle(rc, g_dither_brush);
+    g_renderer.target->FillRoundedRectangle(D2D1::RoundedRect(rc, g_style.rounding, g_style.rounding), g_dither_brush);
 }
 static void fill_triangle(Rect r, int dir, Color c) {
     r = apply_draw_rect(r);
@@ -3955,6 +3966,7 @@ static std::string g_clipboard_buf;
 static cairo_surface_t* g_dither_surface = nullptr;
 static cairo_pattern_t* g_dither_pattern = nullptr;
 static int             g_dither_cache_cell = 0;
+static float           g_dither_cache_scale = 0.0f;
 static Color           g_dither_cache_accent = {};
 static Color           g_dither_cache_dim = {};
 
@@ -4012,21 +4024,26 @@ static void release_dither_cache() {
     if (g_dither_pattern) { cairo_pattern_destroy(g_dither_pattern); g_dither_pattern = nullptr; }
     if (g_dither_surface) { cairo_surface_destroy(g_dither_surface); g_dither_surface = nullptr; }
     g_dither_cache_cell = 0;
+    g_dither_cache_scale = 0.0f;
     g_dither_cache_accent = {};
     g_dither_cache_dim = {};
 }
 static bool ensure_dither_pattern() {
     int cell = g_dither_size < 1 ? 1 : (g_dither_size > 32 ? 32 : g_dither_size);
+    if (!g_renderer.cr) return false;
+    double sx = 1.0, sy = 1.0;
+    cairo_surface_get_device_scale(cairo_get_target(g_renderer.cr), &sx, &sy);
+    float scale = clampf((float)std::max(sx, sy), 1.0f, 4.0f);
     Color accent = resolve_color(ColorRole::Accent);
     Color dim = resolve_color(ColorRole::TextDim);
-    if (g_dither_pattern && g_dither_surface && g_dither_cache_cell == cell &&
+    if (g_dither_pattern && g_dither_surface && g_dither_cache_cell == cell && g_dither_cache_scale == scale &&
         style_eq(g_dither_cache_accent, accent) && style_eq(g_dither_cache_dim, dim)) {
         return true;
     }
     release_dither_cache();
     std::vector<unsigned char> px;
     int tw = 0, th = 0;
-    build_soft_dither_tile(cell, px, tw, th);
+    build_soft_dither_tile(cell, px, tw, th, scale);
     if (px.empty() || tw <= 0 || th <= 0) return false;
     g_dither_surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, tw, th);
     if (!g_dither_surface || cairo_surface_status(g_dither_surface) != CAIRO_STATUS_SUCCESS) {
@@ -4039,14 +4056,16 @@ static bool ensure_dither_pattern() {
         memcpy(data + (size_t)y * (size_t)stride, px.data() + (size_t)y * (size_t)tw * 4u, (size_t)tw * 4u);
     }
     cairo_surface_mark_dirty(g_dither_surface);
+    cairo_surface_set_device_scale(g_dither_surface, scale, scale);
     g_dither_pattern = cairo_pattern_create_for_surface(g_dither_surface);
     if (!g_dither_pattern || cairo_pattern_status(g_dither_pattern) != CAIRO_STATUS_SUCCESS) {
         release_dither_cache();
         return false;
     }
     cairo_pattern_set_extend(g_dither_pattern, CAIRO_EXTEND_REPEAT);
-    cairo_pattern_set_filter(g_dither_pattern, CAIRO_FILTER_NEAREST);
+    cairo_pattern_set_filter(g_dither_pattern, CAIRO_FILTER_BILINEAR);
     g_dither_cache_cell = cell;
+    g_dither_cache_scale = scale;
     g_dither_cache_accent = accent;
     g_dither_cache_dim = dim;
     return true;
@@ -4055,7 +4074,7 @@ static void draw_dither_pattern(Rect r, float opacity) {
     if (opacity <= 0.001f || !ensure_dither_pattern()) return;
     cairo_t* cr = g_renderer.cr;
     cairo_save(cr);
-    cairo_rectangle(cr, r.x, r.y, r.w, r.h);
+    rrect_path(cr, r.x, r.y, r.w, r.h, g_style.rounding);
     cairo_clip(cr);
     cairo_set_source(cr, g_dither_pattern);
     cairo_paint_with_alpha(cr, clamp01(opacity));
@@ -10208,6 +10227,7 @@ int terminal_height() {
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -11459,11 +11479,37 @@ static const char* find_param(const char* name) {
     return nullptr;
 }
 
-static void copy_to_buffer(char* buffer, int buffer_size, const std::string& value) {
-    if (!buffer || buffer_size <= 0) return;
-    int n = (int)std::min<size_t>((size_t)buffer_size - 1, value.size());
-    if (n > 0) std::memcpy(buffer, value.data(), (size_t)n);
+// Compare the actual stored prefix, not the unbounded submitted value.
+static bool copy_to_buffer(char* buffer, int buffer_size, std::string_view value) {
+    if (!buffer || buffer_size <= 0) return false;
+    size_t n = std::min((size_t)buffer_size - 1, value.size());
+    if (n < value.size()) {
+        while (n > 0 && ((unsigned char)value[n] & 0xc0u) == 0x80u) --n;
+    }
+    if (std::strlen(buffer) == n && (n == 0 || std::memcmp(buffer, value.data(), n) == 0)) return false;
+    if (n > 0) std::memcpy(buffer, value.data(), n);
     buffer[n] = '\0';
+    return true;
+}
+
+static bool parse_selection(const char* text, int count, int& value) {
+    if (!text || !*text || count <= 0) return false;
+    char* end = nullptr;
+    errno = 0;
+    long parsed = std::strtol(text, &end, 10);
+    if (errno == ERANGE || end == text || *end || parsed < 0 || parsed >= count) return false;
+    value = (int)parsed;
+    return true;
+}
+
+static bool parse_float(const char* text, float& value) {
+    if (!text || !*text) return false;
+    char* end = nullptr;
+    errno = 0;
+    float parsed = std::strtof(text, &end);
+    if (errno == ERANGE || end == text || *end || !std::isfinite(parsed)) return false;
+    value = parsed;
+    return true;
 }
 
 static std::string disabled_attr() {
@@ -11559,21 +11605,68 @@ static bool action_matches(const std::string& id) {
     return action && id == action && ctx().disabled_depth == 0;
 }
 
+// Determine the exact request extent before accepting any form parameters.
+// Chunked bodies are unsupported; reject them rather than interpreting raw chunks.
+static bool http_request_size(const std::string& raw, size_t header_end, int max_bytes, size_t& total) {
+    if (max_bytes <= 0 || header_end + 4 > (size_t)max_bytes) return false;
+    size_t limit = (size_t)max_bytes - (header_end + 4);
+    size_t length = 0;
+    bool have_length = false;
+    size_t pos = raw.find("\r\n");
+    if (pos == std::string::npos) return false;
+    pos += 2;
+    while (pos < header_end) {
+        size_t end = raw.find("\r\n", pos);
+        if (end == std::string::npos || end > header_end) return false;
+        std::string_view line(raw.data() + pos, end - pos);
+        size_t colon = line.find(':');
+        if (colon != std::string_view::npos) {
+            std::string name = lower_copy(line.substr(0, colon));
+            if (name == "transfer-encoding") return false;
+            if (name == "content-length") {
+                std::string text = trim_copy(line.substr(colon + 1));
+                if (text.empty()) return false;
+                size_t parsed = 0;
+                for (char ch : text) {
+                    if (ch < '0' || ch > '9') return false;
+                    size_t digit = (size_t)(ch - '0');
+                    if (digit > limit || parsed > (limit - digit) / 10) return false;
+                    parsed = parsed * 10 + digit;
+                }
+                if (have_length && length != parsed) return false;
+                length = parsed;
+                have_length = true;
+            }
+        }
+        pos = end + 2;
+    }
+    total = header_end + 4 + length;
+    return true;
+}
+
 #if defined(ARDUINO) && defined(ESP32)
 static bool read_http_request(std::string& raw, int max_bytes) {
     Context& c = ctx();
     raw.clear();
+    if (max_bytes <= 0) return false;
+    size_t total = (size_t)max_bytes;
+    bool headers_ready = false;
     unsigned long start = millis();
-    while (c.net.client.connected() && (millis() - start) < 3000) {
+    unsigned long timeout = (unsigned long)std::max(0, c.cfg.read_timeout_ms);
+    while ((millis() - start) <= timeout) {
         while (c.net.client.available()) {
-            char ch = (char)c.net.client.read();
-            raw += ch;
-            if ((int)raw.size() >= max_bytes) return false;
-            if (raw.find("\r\n\r\n") != std::string::npos) return true;
+            if (raw.size() >= total) return false;
+            raw += (char)c.net.client.read();
+            if (!headers_ready && raw.size() >= 4 && raw.compare(raw.size()-4, 4, "\r\n\r\n") == 0) {
+                if (!http_request_size(raw, raw.size()-4, max_bytes, total)) return false;
+                headers_ready = true;
+            }
+            if (headers_ready && raw.size() == total) return true;
         }
+        if (!c.net.client.connected()) return false;
         delay(1);
     }
-    return raw.find("\r\n\r\n") != std::string::npos;
+    return false;
 }
 
 static void send_raw_response(const char* content_type, const std::string& body) {
@@ -11621,12 +11714,21 @@ static bool wait_for_socket_read(Socket s, int timeout_ms) {
 }
 
 static bool send_all(Socket s, const char* data, int len) {
+#if !defined(_WIN32) && defined(SO_NOSIGPIPE)
+    int no_sigpipe = 1;
+    if (setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe)) != 0) return false;
+#endif
     int sent = 0;
     while (sent < len) {
 #if defined(_WIN32)
         int n = send(s, data + sent, len - sent, 0);
 #else
+#ifdef MSG_NOSIGNAL
+        int n = (int)send(s, data + sent, (size_t)(len - sent), MSG_NOSIGNAL);
+#else
         int n = (int)send(s, data + sent, (size_t)(len - sent), 0);
+#endif
+        if (n < 0 && errno == EINTR) continue;
 #endif
         if (n <= 0) return false;
         sent += n;
@@ -11637,53 +11739,34 @@ static bool send_all(Socket s, const char* data, int len) {
 static bool read_http_request(std::string& raw, int max_bytes) {
     Context& c = ctx();
     raw.clear();
+    if (max_bytes <= 0) return false;
+    size_t total = (size_t)max_bytes;
+    bool headers_ready = false;
     char buf[1024];
-    while ((int)raw.size() < max_bytes) {
+    while (raw.size() < total) {
         if (!wait_for_socket_read(c.net.client, c.cfg.read_timeout_ms)) {
-            debugf("client read timeout after %d ms; closing idle/partial connection", c.cfg.read_timeout_ms);
+            debugf("client read timeout after %d ms; closing incomplete request", c.cfg.read_timeout_ms);
             return false;
         }
+        int capacity = (int)std::min(sizeof(buf), total - raw.size());
 #if defined(_WIN32)
-        int n = recv(c.net.client, buf, (int)sizeof(buf), 0);
+        int n = recv(c.net.client, buf, capacity, 0);
 #else
-        int n = (int)recv(c.net.client, buf, sizeof(buf), 0);
+        int n = (int)recv(c.net.client, buf, (size_t)capacity, 0);
+        if (n < 0 && errno == EINTR) continue;
 #endif
-        if (n <= 0) {
-            debugf("recv failed or client closed before headers; n=%d err=%d", n, last_net_error());
-            return false;
+        if (n <= 0) return false;
+        size_t previous_size = raw.size();
+        raw.append(buf, (size_t)n);
+        if (!headers_ready) {
+            size_t header_end = raw.find("\r\n\r\n", previous_size > 3 ? previous_size - 3 : 0);
+            if (header_end != std::string::npos) {
+                if (!http_request_size(raw, header_end, max_bytes, total)) return false;
+                headers_ready = true;
+            }
         }
-        raw.append(buf, buf + n);
-        debugf("read %d bytes from client (total=%d)", n, (int)raw.size());
-        size_t header_end = raw.find("\r\n\r\n");
-        if (header_end != std::string::npos) {
-            int content_length = 0;
-            std::string headers = raw.substr(0, header_end + 4);
-            size_t p = headers.find("Content-Length:");
-            if (p == std::string::npos) p = headers.find("content-length:");
-            if (p != std::string::npos) {
-                p += 15;
-                while (p < headers.size() && std::isspace((unsigned char)headers[p])) ++p;
-                content_length = std::atoi(headers.c_str() + p);
-            }
-            size_t have_body = raw.size() - (header_end + 4);
-            while ((int)have_body < content_length && (int)raw.size() < max_bytes) {
-                if (!wait_for_socket_read(c.net.client, c.cfg.read_timeout_ms)) {
-                    debugf("client body read timeout after %d ms (%d/%d bytes)", c.cfg.read_timeout_ms, (int)have_body, content_length);
-                    return false;
-                }
-#if defined(_WIN32)
-                n = recv(c.net.client, buf, (int)sizeof(buf), 0);
-#else
-                n = (int)recv(c.net.client, buf, sizeof(buf), 0);
-#endif
-                if (n <= 0) {
-                    debugf("recv failed while reading body; n=%d err=%d", n, last_net_error());
-                    return false;
-                }
-                raw.append(buf, buf + n);
-                have_body += (size_t)n;
-                debugf("read body chunk %d bytes (%d/%d)", n, (int)have_body, content_length);
-            }
+        if (headers_ready && raw.size() >= total) {
+            raw.resize(total); // No pipelined/trailing bytes enter the form body.
             return true;
         }
     }
@@ -12082,7 +12165,8 @@ static void append_css() {
     c.out += ".ft-log{white-space:pre-wrap;background:var(--paper2);border:2px solid var(--border);border-radius:2px;margin:0;padding:10px;overflow:auto;color:var(--ink);box-shadow:inset 1px 0 0 rgba(0,0,0,.18)}";
     c.out += ".ft-tabs{display:flex;gap:8px;flex-wrap:wrap}.ft-tabs .sel,button.sel{background:var(--ink);border-color:var(--ink);color:var(--paper);box-shadow:3px 3px 0 var(--faint)}.ft-scroll{overflow:auto;border:2px solid var(--border);border-radius:2px;padding:10px;background:var(--paper2)}";
     c.out += "details{border:2px solid var(--border);border-radius:2px;padding:10px;background:var(--paper2)}summary{cursor:pointer;font-weight:900}.ft-modal{position:fixed;inset:0;background:rgba(0,0,0,.58);display:grid;place-items:center;padding:20px;z-index:10}.ft-modal>section{width:min(560px,100%);background:var(--paper);color:var(--ink);border:3px solid var(--border);border-radius:2px;padding:16px;display:flex;flex-direction:column;gap:10px;box-shadow:8px 10px 0 rgba(0,0,0,.28);filter:url(#ftht-rough-ink-light)}";
-    c.out += ".accent{background:var(--accent);border-color:var(--border);color:#fff}.warning{background:var(--warning);border-color:var(--border);color:#0b0807}.success{background:var(--success);border-color:var(--border);color:#071007}";
+    c.out += "button.accent{background:var(--accent);border-color:var(--border);color:#fff}button.warning{background:var(--warning);border-color:var(--border);color:#0b0807}button.success{background:var(--success);border-color:var(--border);color:#071007}";
+    c.out += "button:focus-visible,summary:focus-visible{outline:3px solid var(--focus);outline-offset:3px}";
     c.out += ".ft-toast-stack{position:fixed;right:18px;bottom:18px;z-index:60;display:flex;flex-direction:column;align-items:flex-end;gap:10px;pointer-events:none;width:min(420px,calc(100vw - 24px))}";
     c.out += ".ft-toast{pointer-events:auto;width:100%;display:grid;grid-template-columns:1fr auto;gap:6px 10px;background:var(--paper);color:var(--ink);border:2px solid var(--border);border-left-width:8px;border-radius:2px;padding:10px 10px 10px 12px;box-shadow:5px 6px 0 rgba(0,0,0,.22);filter:url(#ftht-rough-ink-light);opacity:0;transform:translateY(8px);animation:ft-toast-in .18s ease forwards}";
     c.out += ".ft-toast-info{border-left-color:var(--accent)}.ft-toast-success{border-left-color:var(--success)}.ft-toast-warning{border-left-color:var(--warning)}.ft-toast-error{border-left-color:var(--error)}";
@@ -12091,6 +12175,7 @@ static void append_css() {
     c.out += ".ft-command-shell{position:fixed;left:16px;right:16px;bottom:16px;z-index:90;display:none;align-items:center;gap:0;background:var(--paper);border:3px solid var(--border);box-shadow:6px 7px 0 rgba(0,0,0,.24);padding:8px 10px;color:var(--ink);font:900 15px/1.2 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.ft-command-shell.open{display:flex}.ft-command-prefix{color:var(--accent);padding-right:2px}.ft-command-input{position:absolute;opacity:0;pointer-events:none;width:1px;height:1px}.ft-command-text{color:var(--accent);white-space:pre}.ft-command-preview{color:var(--faint);white-space:pre}.ft-command-hint{margin-left:auto;color:var(--muted);font-size:12px;text-transform:uppercase}";
     c.out += ".ft-bleed{pointer-events:none;position:absolute;inset:0;border:0 solid transparent;opacity:0}";
     c.out += "@media(prefers-color-scheme:dark){.accent{color:#fff}.warning,.success{color:#050505}}@media(max-width:720px){main{margin:0;padding:14px;border-width:2px;box-shadow:none}.ft-row{grid-template-columns:1fr!important}.ft-toast-stack{left:10px;right:10px;bottom:10px;width:auto;align-items:stretch}.ft-toast{width:100%}}";
+    c.out += "@media(prefers-reduced-motion:reduce){main,button,.ft-toast{transition:none;animation:none}.ft-toast{opacity:1;transform:none}.ft-toast-out{opacity:0}}";
     c.out += "</style>";
 }
 
@@ -12195,7 +12280,6 @@ static void append_toast_script() {
     if (!sources.length) return;
     const stack = ensureStack();
     for (const source of sources) {
-      if (source === stack) continue;
       const items = Array.from(source.querySelectorAll(".ft-toast"));
       for (const item of items) {
         const id = item.getAttribute("data-ft-toast-id") || "";
@@ -12203,10 +12287,13 @@ static void append_toast_script() {
           item.remove();
           continue;
         }
-        if (id && stack.querySelector(`[data-ft-toast-id="${id}"]`)) {
+        const existing = id && stack.querySelector(`[data-ft-toast-id="${id}"]`);
+        if (existing && existing !== item) {
           item.remove();
           continue;
         }
+        if (item.dataset.ftToastInitialized === "1") continue;
+        item.dataset.ftToastInitialized = "1";
         const close = item.querySelector(".ft-toast-close");
         if (close) close.addEventListener("click", () => dismissToast(item));
         const duration = Math.max(1000, Number(item.getAttribute("data-ft-toast-duration") || 4000));
@@ -12696,6 +12783,7 @@ void begin() {
     c.out.clear();
     c.response_open = true;
     c.modal_rendered = false;
+    if (action_matches("_ftht_close_modal")) close_modal();
     if (c.client_update) {
         c.out += "<main><div class=\"ft-bleed\"></div><form method=\"post\" action=\"";
         c.out += escape_html(c.req_path.empty() ? "/" : c.req_path);
@@ -12855,8 +12943,7 @@ bool input(const char* label, char* buffer, int buffer_size, InputFlags flags, b
         if (flags & InputFlags::CharsUppercase) {
             for (char& ch : value) ch = (char)std::toupper((unsigned char)ch);
         }
-        if (buffer && std::strcmp(buffer, value.c_str()) != 0) {
-            copy_to_buffer(buffer, buffer_size, value);
+        if (copy_to_buffer(buffer, buffer_size, value)) {
             changed = true;
             debugf("input changed id=%s label='%s' bytes=%d", id.c_str(), visible_label(label).c_str(), (int)value.size());
         }
@@ -12883,8 +12970,7 @@ bool text_area_ex(const char* label, char* buffer, int buffer_size, int rows, Te
     const char* posted = find_param(id.c_str());
     bool changed = false;
     if (posted && !(flags & TextAreaFlags::ReadOnly) && ctx().disabled_depth == 0) {
-        if (buffer && std::strcmp(buffer, posted) != 0) {
-            copy_to_buffer(buffer, buffer_size, posted);
+        if (copy_to_buffer(buffer, buffer_size, posted)) {
             changed = true;
             debugf("text_area changed id=%s label='%s' bytes=%d", id.c_str(), visible_label(label).c_str(), (int)std::strlen(posted));
         }
@@ -12940,8 +13026,8 @@ bool slider_float(const char* label, float* value, float min_v, float max_v) {
     std::string id = widget_id(label);
     const char* posted = find_param(id.c_str());
     bool changed = false;
-    if (posted && value && ctx().disabled_depth == 0) {
-        float next = (float)std::atof(posted);
+    float next = 0.0f;
+    if (posted && value && ctx().disabled_depth == 0 && parse_float(posted, next)) {
         next = std::max(min_v, std::min(max_v, next));
         changed = (*value != next);
         *value = next;
@@ -13020,8 +13106,8 @@ bool dropdown(const char* label, const char* const* items, int count, int* selec
     const char* posted = find_param(id.c_str());
     bool changed = false;
     if (posted && selected && ctx().disabled_depth == 0) {
-        int next = std::atoi(posted);
-        if (next >= 0 && next < count) {
+        int next = 0;
+        if (parse_selection(posted, count, next)) {
             changed = (*selected != next);
             *selected = next;
             if (changed) debugf("dropdown changed id=%s label='%s' selected=%d", id.c_str(), visible_label(label).c_str(), *selected);
@@ -13044,8 +13130,8 @@ bool listbox(const char* label, const char* const* items, int count, int* select
     const char* posted = find_param(id.c_str());
     bool changed = false;
     if (posted && selected && ctx().disabled_depth == 0) {
-        int next = std::atoi(posted);
-        if (next >= 0 && next < count) {
+        int next = 0;
+        if (parse_selection(posted, count, next)) {
             changed = (*selected != next);
             *selected = next;
             if (changed) debugf("listbox changed id=%s label='%s' selected=%d", id.c_str(), visible_label(label).c_str(), *selected);
@@ -13068,8 +13154,8 @@ bool radio_group(const char* label, const char* const* items, int count, int* se
     const char* posted = find_param(id.c_str());
     bool changed = false;
     if (posted && selected && ctx().disabled_depth == 0) {
-        int next = std::atoi(posted);
-        if (next >= 0 && next < count) {
+        int next = 0;
+        if (parse_selection(posted, count, next)) {
             changed = (*selected != next);
             *selected = next;
             if (changed) debugf("radio_group changed id=%s label='%s' selected=%d", id.c_str(), visible_label(label).c_str(), *selected);
@@ -13112,8 +13198,8 @@ bool tabs(const char* const* labels, int count, int* selected) {
     const char* posted = find_param(id.c_str());
     bool changed = false;
     if (posted && selected && ctx().disabled_depth == 0) {
-        int next = std::atoi(posted);
-        if (next >= 0 && next < count) {
+        int next = 0;
+        if (parse_selection(posted, count, next)) {
             changed = (*selected != next);
             *selected = next;
             if (changed) debugf("tabs changed id=%s selected=%d", id.c_str(), *selected);
@@ -13187,11 +13273,21 @@ void open_modal(const char* label) {
 bool modal(const char* label, std::function<void()> fn) {
     using namespace internal;
     if (action_matches("_ftht_close_modal")) close_modal();
-    if (ctx().modal_label != visible_label(label)) return false;
-    ctx().modal_rendered = true;
-    ctx().out += "<div class=\"ft-modal\"><section>";
+    Context& c = ctx();
+    const std::string name = visible_label(label);
+    if (c.modal_label != name) return false;
+    c.modal_rendered = true;
+    const size_t start = c.out.size();
+    c.out += "<div class=\"ft-modal\"><section>";
     if (fn) fn();
-    ctx().out += "</section></div>";
+    if (c.modal_label != name) {
+        // A callback can close/switch the modal during this request. Do not
+        // send its already-rendered overlay and wait for a second request.
+        c.out.resize(start);
+        c.modal_rendered = false;
+    } else {
+        c.out += "</section></div>";
+    }
     return true;
 }
 
@@ -14574,7 +14670,8 @@ inline bool table(const char* label, const std::vector<std::string>& headers,
     if (detail::render_mode()==Mode::Gui) return ftui::table(label,headers,rows,state,options);
     int columns=(int)headers.size();
     for (const auto& r:rows) columns=std::max(columns,(int)r.size());
-    auto order=ftui::table_order(rows,columns,state);
+    if (state.selected_row < -1 || state.selected_row >= (int)rows.size()) state.selected_row = -1;
+    if (state.sort_column < -1 || state.sort_column >= columns) state.sort_column = -1;
     int visible=std::max(1,options.visible_rows), max_first=std::max(0,(int)rows.size()-visible);
     state.first_row=std::max(0,std::min(max_first,state.first_row));
     bool changed=false, web=detail::render_mode()==Mode::Web;
@@ -14603,7 +14700,7 @@ inline bool table(const char* label, const std::vector<std::string>& headers,
         });
         if (web) html("</tr></thead>");
     }
-    order=ftui::table_order(rows,columns,state);
+    auto order=ftui::table_order(rows,columns,state);
     if (web) html("<tbody>");
     for (int v=0;v<visible && state.first_row+v<(int)order.size();++v) {
         int source=order[state.first_row+v];

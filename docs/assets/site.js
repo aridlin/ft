@@ -1,0 +1,59 @@
+'use strict';
+const $=(s,r=document)=>r.querySelector(s);
+const $$=(s,r=document)=>[...r.querySelectorAll(s)];
+const escapeText=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const motion=matchMedia('(prefers-reduced-motion: reduce)');
+function frame(el,title,preview,code,footer=''){
+ el.className='demo';
+ el.innerHTML=`<div class="demo-head"><strong>${title}</strong><span>Interactive teaching model</span></div><div class="demo-body"><div class="demo-preview">${preview}</div><div class="demo-code">${code}</div></div><div class="demo-footer">${footer}</div>`;
+}
+function replay(el,cls){el.classList.remove(cls);void el.offsetWidth;el.classList.add(cls);}
+function widgets(el){
+ frame(el,'01 / Widgets & state',`<div class="widget-card"><strong>Audio settings</strong><label><input type="checkbox" checked data-enabled> Enabled</label><label for="volume-demo">Volume <output data-volume>50%</output></label><input id="volume-demo" type="range" min="0" max="100" value="50"><div class="meter"><div class="meter-fill"></div></div><button class="primary" data-save>Save settings</button><div class="toast-demo" role="status"></div></div>`,`<span class="dim">// Your application owns these values.</span><span data-state></span><span>ft::checkbox("Enabled", &amp;enabled);\nft::slider_float("Volume", &amp;volume, 0, 1);</span>`,'Move the slider, then save. The event changes state; the next render shows it. <button data-reset>Reset</button>');
+ const update=()=>{let n=Number($('input[type=range]',el).value),enabled=$('[data-enabled]',el).checked;$('[data-volume]',el).textContent=n+'%';$('.meter-fill',el).style.width=n+'%';$('.meter-fill',el).style.opacity=enabled?'1':'.3';$('[data-state]',el).textContent=`bool enabled = ${enabled};\nfloat volume = ${(n/100).toFixed(2)}f;`;};
+ $('input[type=range]',el).addEventListener('input',update);$('[data-enabled]',el).addEventListener('change',update);
+ $('[data-save]',el).onclick=()=>{const t=$('.toast-demo',el);t.textContent='✓ Saved in this preview';replay(t,'flash');};
+ $('[data-reset]',el).onclick=()=>{$('input[type=range]',el).value=50;$('[data-enabled]',el).checked=true;$('.toast-demo',el).textContent='';update();};update();
+}
+function frames(el){
+ const names=['pump()','begin()','widgets','end()'];const messages=['Read input or wait for work. Continue only if pump() returns true.','Begin this frame: prepare the backend to receive widget calls.','Describe the interface. A button can report a click and update your state.','Present the local frame, or finish the HTTP response. Then repeat.'];
+ frame(el,'02 / Follow a frame',`<div class="step-track">${names.map((n,i)=>`<div class="step"><span class="step-number">${i+1}</span>${n}</div>`).join('')}</div><div class="step-message" role="status"></div><div class="demo-actions"><button class="primary" data-play aria-pressed="false">Play animation</button><button data-next>Next step</button><button data-reset>Reset</button></div>`,`<span data-line>while (ft::pump()) {</span><span data-line>    ft::begin();</span><span data-line>    ft::button("Save");</span><span data-line>    ft::end();</span><span>}</span>`,'One conceptual cycle, slowed down. You control playback.');
+ let step=0,timer=null;
+ const render=()=>{$$('.step',el).forEach((x,i)=>x.classList.toggle('active',i===step));$$('[data-line]',el).forEach((x,i)=>x.classList.toggle('hot',i===step));$('.step-message',el).textContent=messages[step];};
+ const stop=()=>{clearInterval(timer);timer=null;$('[data-play]',el).textContent='Play animation';$('[data-play]',el).setAttribute('aria-pressed','false');};
+ const next=()=>{step=(step+1)%4;render();};
+ $('[data-play]',el).onclick=()=>{if(timer){stop();return;}timer=setInterval(next,motion.matches?2200:1400);$('[data-play]',el).textContent='Pause';$('[data-play]',el).setAttribute('aria-pressed','true');};
+ $('[data-next]',el).onclick=()=>{stop();next();};$('[data-reset]',el).onclick=()=>{stop();step=0;render();};
+ document.addEventListener('visibilitychange',()=>{if(document.hidden)stop();});
+ new IntersectionObserver(entries=>{if(!entries[0].isIntersecting)stop();},{threshold:0.1}).observe(el);render();
+}
+function counter(el){
+ frame(el,'03 / Events change state',`<div class="count" aria-live="polite">0</div><button class="primary" data-add>Add one</button><label><input type="checkbox" data-bug> Mistake: reset inside the loop</label>`,`<span data-init></span><span>while (ft::pump()) {\n    ft::begin();</span><span data-reset-line></span><span class="hot">    if (ft::button("Add one")) ++count;</span><span>    // Render the current count.\n    ft::end();\n}</span>`,`<span data-explain>State stays alive between frames.</span><button data-reset>Reset</button>`);
+ let count=0;const render=()=>{const bug=$('[data-bug]',el).checked;$('.count',el).textContent=count;$('[data-init]',el).textContent=bug?'// No persistent counter here.':'int count = 0; // before the loop';$('[data-reset-line]',el).textContent=bug?'    int count = 0; // reset EVERY frame':'';$('[data-reset-line]',el).classList.toggle('hot',bug);$('[data-explain]',el).textContent=bug?'Each click frame resets to 0, then adds 1. It cannot accumulate.':'State stays alive between frames.';};
+ $('[data-add]',el).onclick=()=>{count=$('[data-bug]',el).checked?1:count+1;render();replay($('.count',el),'bump');};$('[data-bug]',el).onchange=()=>{count=0;render();};$('[data-reset]',el).onclick=()=>{count=0;$('[data-bug]',el).checked=false;render();};render();
+}
+function layout(el){
+ frame(el,'04 / Divide the space',`<label>Column weights <select data-ratio><option value="2,1">2 : 1 — more room for content</option><option value="1,1">1 : 1 — equal widths</option><option value="1,2">1 : 2 — more room for the action</option></select></label><div class="layout-stage"><div class="layout-block">Main content</div><div class="layout-block">Action</div></div>`,`<span data-layout-code></span>`,'The gap stays separate; weights divide the space left for columns. <button data-reset>Reset</button>');
+ const update=()=>{let [a,b]=$('[data-ratio]',el).value.split(',');$('.layout-stage',el).style.gridTemplateColumns=`${a}fr ${b}fr`;$('[data-layout-code]',el).textContent=`ft::row({${a}.0f, ${b}.0f}, [&] {\n    ft::text("Main content");\n    ft::button("Action");\n});`;};$('[data-ratio]',el).onchange=update;$('[data-reset]',el).onclick=()=>{$('[data-ratio]',el).value='2,1';update();};update();
+}
+function table(el){
+ frame(el,'05 / Sorting & selection',`<table class="demo-table"><thead><tr><th><button data-sort="0">Name ↕</button></th><th><button data-sort="1">Status ↕</button></th></tr></thead><tbody></tbody></table><div class="state-chip" role="status"></div>`,`<span class="dim">// Original source order never changes.</span><span>0: {"Cara",  "Ready"}\n1: {"Alice", "Busy"}\n2: {"Bob",   "Ready"}</span><span data-table-state></span>`,'Click a header to sort. Select a name to inspect its source index. <button data-reset>Reset</button>');
+ const rows=[['Cara','Ready'],['Alice','Busy'],['Bob','Ready']];let selected=-1,sort=-1,descending=false;
+ const render=()=>{let order=[0,1,2];if(sort>=0)order.sort((a,b)=>{let av=rows[a][sort],bv=rows[b][sort];return (av<bv?-1:av>bv?1:0)*(descending?-1:1);});$('tbody',el).innerHTML=order.map(i=>`<tr class="${i===selected?'selected':''}"><td><button data-row="${i}" aria-pressed="${i===selected}">${rows[i][0]}</button></td><td>${rows[i][1]}</td></tr>`).join('');$$('[data-row]',el).forEach(b=>b.onclick=()=>{selected=Number(b.dataset.row);render();});$$('[data-sort]',el).forEach((b,i)=>{b.textContent=['Name','Status'][i]+' '+(sort===i?(descending?'↓':'↑'):'↕');b.closest('th').setAttribute('aria-sort',sort===i?(descending?'descending':'ascending'):'none');});$('.state-chip',el).textContent=`selected_row = ${selected}`;$('[data-table-state]',el).textContent=`state.selected_row = ${selected};\nstate.sort_column = ${sort};\nstate.descending = ${descending};`;};
+ $$('[data-sort]',el).forEach(b=>b.onclick=()=>{const n=Number(b.dataset.sort);descending=n===sort?!descending:false;sort=n;render();});$('[data-reset]',el).onclick=()=>{selected=-1;sort=-1;descending=false;render();};render();
+}
+function backends(el){
+ frame(el,'06 / Choose a backend',`<div class="backend-tabs" role="group" aria-label="Backend preview"><button data-mode="gui" aria-pressed="true">GUI</button><button data-mode="tui" aria-pressed="false">TUI</button><button data-mode="web" aria-pressed="false">Web</button></div><div class="backend-window"><strong>My first app</strong><div data-backend-text>Hello from FT</div><span class="faux-button" aria-hidden="true">Save</span></div>`,`<span>ft::text("Hello from FT");\nif (ft::button("Save")) {\n    ft::toast_success("Saved");\n}</span><span class="dim" data-command></span>`,`<span data-backend-note>Native desktop rendering.</span>`);
+ const descriptions={gui:'Native desktop rendering; pixel-based layout.',tui:'Terminal cell rendering; run with interactive stdin and stdout.',web:'HTML form rendering; requests drive the C++ frame loop.'};
+ $$('[data-mode]',el).forEach(b=>b.onclick=()=>{let mode=b.dataset.mode;$$('[data-mode]',el).forEach(x=>x.setAttribute('aria-pressed',String(x===b)));$('.backend-window',el).className='backend-window '+(mode==='tui'?'terminal':mode==='web'?'web':'');$('.faux-button',el).textContent=mode==='tui'?'[ Save ]':'Save';$('[data-command]',el).textContent=`// Launch the compiled example:\n./docs-hello --${mode}`;$('[data-backend-note]',el).textContent=descriptions[mode];});$('[data-mode=gui]',el).click();
+}
+const demos={widgets,frames,counter,layout,table,backends};
+$$('[data-demo]').forEach(el=>demos[el.dataset.demo]?.(el));
+// Add copy controls to reference snippets without changing their source text.
+$$('pre').forEach(pre=>{let wrap=document.createElement('div');wrap.className='code-wrap';pre.before(wrap);wrap.append(pre);let b=document.createElement('button');b.className='copy';b.textContent='Copy';b.setAttribute('aria-label','Copy code example');wrap.append(b);b.onclick=async()=>{try{await navigator.clipboard.writeText(pre.textContent);b.textContent='Copied';}catch{b.textContent='Select to copy';const range=document.createRange();range.selectNodeContents(pre);const selection=getSelection();selection.removeAllRanges();selection.addRange(range);}setTimeout(()=>b.textContent='Copy',1800);};});
+$$('table:not(.demo-table)').forEach(t=>{let w=document.createElement('div');w.className='table-wrap';t.before(w);w.append(t);});
+const mobile=$('.mobile-nav');if(mobile)mobile.onclick=()=>{let expanded=$('.sidebar').classList.toggle('open');mobile.setAttribute('aria-expanded',String(expanded));};
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('.sidebar.open')){$('.sidebar').classList.remove('open');mobile.setAttribute('aria-expanded','false');mobile.focus();}});
+// Search data is a local script, so the site also works when opened as a file.
+const search=$('.search'),results=$('.search-results');
+if(search)search.addEventListener('input',()=>{let q=search.value.trim().toLowerCase();results.replaceChildren();$('.nav-groups').hidden=!!q;if(!q)return;const terms=q.split(/\s+/);const hits=(window.FT_SEARCH||[]).filter(p=>terms.every(t=>p.text.toLowerCase().includes(t)||p.title.toLowerCase().includes(t))).slice(0,12);if(!hits.length){results.innerHTML='<p class="empty-search">No matching pages. Try “button”, “build”, or “clipboard”.</p>';return;}for(const p of hits){let a=document.createElement('a');a.href=p.url;let title=document.createElement('strong');title.textContent=p.title;a.append(title);let small=document.createElement('small'),idx=p.text.toLowerCase().indexOf(terms[0]);small.textContent=p.text.slice(Math.max(0,idx-30),Math.max(0,idx-30)+110)+'…';a.append(small);results.append(a);}});

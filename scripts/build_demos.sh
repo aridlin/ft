@@ -20,3 +20,5 @@ done
 "$cxx" examples/ft_combined_smoke.cpp -o build/ft_combined_smoke $cxxflags $ftui_libs -pthread
 
 "$cxx" examples/ft_data_widgets.cpp -o build/ft_data_widgets $cxxflags $ftui_libs -pthread
+
+"$cxx" examples/ft_graphics.cpp -o build/ft_graphics $cxxflags $ftui_libs -pthread

@@ -24,6 +24,9 @@
 | Frame pacing | Local FPS limit | Local FPS limit | Request-driven; client polling |
 | `ft::debug()` | Live GUI state | Facade fallback state | Facade fallback state |
 
+See [custom graphics and overlays](graphics.md) for canvas/result-list APIs,
+independent HUD windows, shader availability and the Linux/Windows distinction.
+
 ## Native platform details
 
 Windows uses Direct2D/DirectWrite and platform windowing APIs. Linux uses X11/Cairo. Blur effects are Windows-specific; dither support is broader. Window opacity/transparency also depends on the desktop compositor. A runtime flag cannot make unsupported platform effects available.

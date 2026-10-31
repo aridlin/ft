@@ -66,7 +66,7 @@
 #define FTUI_VERSION_MAJOR 1
 #endif
 #ifndef FTUI_VERSION_MINOR
-#define FTUI_VERSION_MINOR 1
+#define FTUI_VERSION_MINOR 2
 #endif
 #ifndef FTUI_VERSION_PATCH
 #define FTUI_VERSION_PATCH 0
@@ -77,6 +77,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #endif
 #include <cstring>
+#include <cstdint>
 #include <cstdio>
 #include <cstdarg>
 #include <cmath>
@@ -177,6 +178,14 @@ enum class WindowTransparency {
     BayerDither,
     Blur,
 };
+
+// Dither coverage is evaluated over the completed interface, preserving its colors.
+enum class DitherPattern { Bayer, Halftone };
+struct DitherStyle {
+    DitherPattern pattern=DitherPattern::Bayer;
+    float top=1,bottom=1,reveal=1; // Coverage gradient and caller-controlled opening reveal.
+};
+void set_dither_style(const DitherStyle& style);
 
 struct Config {
     const char* title         = "FTUI App"; // UTF-8; converted internally on Windows
@@ -429,6 +438,99 @@ struct DebugState {
 };
 DebugState& debug();
 
+// Free-positioned graphics and non-modal desktop overlays.
+struct Rect { float x=0,y=0,w=0,h=0; };
+struct TextStyle {
+    float size=16; bool bold=false; Align align=Align::Start;
+    const char* family="sans-serif"; bool ellipsis=true;
+};
+struct FrameInput {
+    float mouse_x=0,mouse_y=0,wheel=0,delta_seconds=0;
+    bool pressed=false,released=false,down=false,enter=false,escape=false;
+    bool up=false,down_key=false,left=false,right=false,shift=false,ctrl=false,alt=false,focused=false;
+    bool page_up=false,page_down=false,home=false,end=false;
+    std::string text;
+};
+// Canvas coordinates are logical pixels. Methods are valid only in the draw callback.
+class Canvas {
+    void* context_=nullptr; void* fonts_=nullptr;
+public:
+    Canvas(void* context,void* fonts=nullptr):context_(context),fonts_(fonts){}
+    void* native_context() const {return context_;} // cairo_t* / ID2D1RenderTarget*
+    void fill(Rect r,Color color,float radius=0);
+    void stroke(Rect r,Color color,float thickness=1,float radius=0);
+    void line(float x1,float y1,float x2,float y2,Color color,float thickness=1);
+    void circle(float x,float y,float radius,Color color);
+    void text(const char* utf8,Rect r,Color color,const TextStyle& style={});
+    float text_width(const char* utf8,const TextStyle& style={});
+    // Premultiplied BGRA8, row-major, stride >= width*4.
+    void pixels(const unsigned char* bgra,int width,int height,int stride,Rect destination);
+    void clipped(Rect r,const std::function<void(Canvas&)>& draw);
+};
+using CanvasDraw=std::function<void(Canvas&,Rect,const FrameInput&)>;
+// A normal layout item; native GUI only. Returns false on other backends.
+bool canvas(const char* id,float height,const CanvasDraw& draw);
+// Absolute drawing in the current window, clipped to the client area.
+bool paint(const CanvasDraw& draw);
+FrameInput frame_input();
+struct GraphicsInfo { bool gpu_dither=false; std::string renderer; };
+GraphicsInfo graphics_info();
+
+struct ResultRow {
+    std::string id,title,subtitle,badge;
+    ImageHandle* icon=nullptr; bool pinned=false,enabled=true;
+};
+struct ResultListState { int selected=-1,first=0; };
+struct ResultListOptions {
+    int visible_rows=5,preview_rows=3; float row_height=58,gap=8;
+    bool keyboard=true; // Disable while another text editor owns arrow/Enter keys.
+    bool select_on_hover=false;
+    float preview_opacity=.32f;
+};
+// Returns the source row activated, or -1. Preview rows are never clickable.
+int result_list(const char* id,const std::vector<ResultRow>& rows,ResultListState& state,
+                const ResultListOptions& options={});
+
+struct WindowOptions {
+    bool borderless=false,topmost=false,skip_taskbar=false,no_activate=false,click_through=false;
+};
+// Runtime controls for the primary GUI window. Call on the UI thread.
+bool set_window_options(const WindowOptions& options);
+void set_window_visible(bool visible,bool activate=true);
+void set_window_position(int x,int y);
+void* native_window(); // HWND on Windows, XID encoded as uintptr_t on Linux.
+
+enum class OverlayAnchor { TopLeft,TopCenter,TopRight,Center,BottomLeft,BottomCenter,BottomRight };
+struct OverlayConfig {
+    const char* title="FT Overlay";
+    int width=720,height=128,margin=32;
+    OverlayAnchor anchor=OverlayAnchor::TopCenter;
+    // Defaults match a recording/caption HUD: never steals focus or mouse input.
+    WindowOptions window={true,true,true,true,true};
+    WindowTransparency transparency=WindowTransparency::Plain;
+    float opacity=1,rounding=18; int dither_size=4; DitherStyle dither;
+};
+// Independent of create_window(): multiple overlays can coexist with a normal FT GUI.
+// Explicit render() calls only; no timers, hooks, input capture or busy loop.
+class Overlay {
+    void* impl_=nullptr;
+public:
+    Overlay()=default; ~Overlay();
+    Overlay(const Overlay&)=delete;Overlay& operator=(const Overlay&)=delete;
+    bool create(const OverlayConfig& config={});
+    bool render(const std::function<void(Canvas&,Rect)>& draw);
+    void hide(); void close(); bool visible() const;
+    bool set_window_options(const WindowOptions& options);
+    void set_position(int x,int y); // Override anchor until next create().
+    GraphicsInfo graphics_info() const;
+    bool set_transparency(WindowTransparency mode,float opacity,const DitherStyle& style={});
+    FrameInput poll_input(); // Nonblocking, only this overlay's events; call before render().
+    void* native_window() const;
+};
+// Shared visual building blocks for caption/status/recording overlays.
+void status_pill(Canvas& canvas,Rect bounds,const char* label,Color background,Color foreground);
+void waveform(Canvas& canvas,Rect bounds,const float* samples,int count,Color color,float thickness=2);
+
 } // namespace ftui
 
 
@@ -499,6 +601,18 @@ DebugState& debug();
 #endif
 #include <cairo/cairo.h>
 #include <cairo/cairo-xlib.h>
+#include <dlfcn.h>
+#if __has_include(<X11/extensions/Xinerama.h>)
+#include <X11/extensions/Xinerama.h>
+#endif
+#if !defined(FTUI_DISABLE_GPU_DITHER) && __has_include(<GL/glx.h>)
+#define FTUI_HAS_GLX 1
+#include <GL/gl.h>
+#include <GL/glext.h>
+#include <GL/glx.h>
+#else
+#define FTUI_HAS_GLX 0
+#endif
 #include <errno.h>
 #include <sys/select.h>
 #include <time.h>
@@ -543,7 +657,7 @@ static void split_label(const char* label, char* visible, int vis_len, const cha
     *hash_src = label;
 }
 
-struct Rect { float x, y, w, h; };
+using Rect = ftui::Rect;
 static bool rect_contains(Rect r, float px, float py) {
     return px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h;
 }
@@ -581,6 +695,7 @@ struct InputState {
     bool  key_up   = false, key_down  = false;
     bool  key_ctrl_c = false, key_ctrl_v = false;
     bool  shift_held = false, ctrl_held = false;
+    bool key_page_up=false,key_page_down=false,key_home=false,key_end=false,alt_held=false;
     char  text_input[64] = {};
     int   text_input_count = 0;
     bool  focused = true;
@@ -789,6 +904,7 @@ static float      g_dt = 1.0f / 60.0f;
 static bool       g_effects_enabled = false;
 static BackdropEffect g_backdrop_effect = BackdropEffect::Blur;
 static int        g_dither_size = 4;
+static DitherStyle g_dither_style;
 static WindowTransparency g_window_transparency = WindowTransparency::Opaque;
 static float      g_window_opacity = 0.92f;
 static float      g_scroll_y = 0, g_content_height = 0;
@@ -2448,6 +2564,7 @@ void set_quit_on_ctrl_q(bool e) { internal::g_shortcuts_enabled = e; }
 void set_fps_limit(int fps) { internal::g_frame_limit_fps = fps; }
 int  get_fps_limit() { return internal::g_frame_limit_fps; }
 void set_backdrop_effect(BackdropEffect effect) { internal::g_backdrop_effect = effect; internal::g_redraw_requested = true; internal::wake_event_loop(); }
+void set_dither_style(const DitherStyle& style) { internal::g_dither_style=style; request_redraw(); }
 void set_dither_size(int px) {
     internal::g_dither_size = px < 1 ? 1 : (px > 32 ? 32 : px);
     internal::g_redraw_requested = true;
@@ -3354,6 +3471,9 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if(wp==VK_RETURN)g_input.key_enter=true;
         if(wp==VK_SPACE) g_input.key_space=true;
         if(wp==VK_ESCAPE)g_input.key_escape=true;
+        if(wp==VK_PRIOR)g_input.key_page_up=true;if(wp==VK_NEXT)g_input.key_page_down=true;
+        if(wp==VK_HOME)g_input.key_home=true;if(wp==VK_END)g_input.key_end=true;
+        g_input.alt_held=(GetKeyState(VK_MENU)&0x8000)!=0;
         if(wp==VK_TAB){if(g_input.shift_held)g_input.key_shift_tab=true;else g_input.key_tab=true;}
         if(wp==VK_LEFT) g_input.key_left=true;
         if(wp==VK_RIGHT)g_input.key_right=true;
@@ -3396,6 +3516,7 @@ bool create_window(const Config& cfg) {
     g_redraw_requested = true;
     g_backdrop_effect = cfg.backdrop_effect;
     g_dither_size = cfg.dither_size < 1 ? 1 : (cfg.dither_size > 32 ? 32 : cfg.dither_size);
+    g_dither_style={};
     g_window_transparency = cfg.window_transparency;
     g_window_opacity = clampf(cfg.window_opacity, 0.20f, 1.0f);
     g_scroll_y = g_scroll_target_y = 0;
@@ -3467,6 +3588,7 @@ bool pump() {
     g_input.key_backspace=g_input.key_enter=g_input.key_space=g_input.key_escape=g_input.key_tab=g_input.key_shift_tab=false;
     g_input.key_left=g_input.key_right=g_input.key_up=g_input.key_down=false;
     g_input.key_ctrl_c=g_input.key_ctrl_v=false;
+    g_input.key_page_up=g_input.key_page_down=g_input.key_home=g_input.key_end=false;
     g_input.text_input_count=0; memset(g_input.text_input,0,sizeof(g_input.text_input));
     if (!g_redraw_requested) wait_for_win32_event();
     bool saw_event = false;
@@ -3662,7 +3784,7 @@ void open_child_window(const Config& cfg, std::function<void()> fn) {
         CmdState cmd; float fps,fpsa; int fpsf, frame_limit_fps; bool redraw_requested;
         LARGE_INTEGER lt;
         int tci,tc,tsa,taci,tac,taas,dither_size; float tasc,tasct,dt,window_opacity;
-        BackdropEffect backdrop_effect; WindowTransparency window_transparency;
+        BackdropEffect backdrop_effect; WindowTransparency window_transparency; DitherStyle dither_style;
         bool effects;
         MotionSlot motion[256];
         TabFxSlot tab_fx[32];
@@ -3693,7 +3815,7 @@ void open_child_window(const Config& cfg, std::function<void()> fn) {
     s.sc=g_scroll_y;s.sct=g_scroll_target_y;s.ch=g_content_height;s.sbd=g_sb_dragging;s.sbmy=g_sb_drag_mouse_y;s.sbms0=g_sb_drag_scroll0;
     s.cmd=g_cmd;s.fps=g_fps;s.fpsa=g_fps_accum;s.fpsf=g_fps_frames;s.lt=g_last_time;
     s.frame_limit_fps=g_frame_limit_fps;s.redraw_requested=g_redraw_requested;
-    s.backdrop_effect=g_backdrop_effect;s.dither_size=g_dither_size;s.window_transparency=g_window_transparency;s.window_opacity=g_window_opacity;
+    s.dither_style=g_dither_style;s.backdrop_effect=g_backdrop_effect;s.dither_size=g_dither_size;s.window_transparency=g_window_transparency;s.window_opacity=g_window_opacity;
     s.tci=g_text_cursor_id;s.tc=g_text_cursor;s.tsa=g_text_sel_anchor;
     s.taci=g_ta_cursor_id;s.tac=g_ta_cursor;s.taas=g_ta_sel_anchor;s.tasc=g_ta_scroll_y;s.tasct=g_ta_scroll_target_y;s.dt=g_dt;
     s.effects=g_effects_enabled;
@@ -3798,7 +3920,7 @@ void open_child_window(const Config& cfg, std::function<void()> fn) {
     g_scroll_y=s.sc;g_scroll_target_y=s.sct;g_content_height=s.ch;g_sb_dragging=s.sbd;g_sb_drag_mouse_y=s.sbmy;g_sb_drag_scroll0=s.sbms0;
     g_cmd=s.cmd;g_fps=s.fps;g_fps_accum=s.fpsa;g_fps_frames=s.fpsf;g_last_time=s.lt;
     g_frame_limit_fps=s.frame_limit_fps;g_redraw_requested=s.redraw_requested;
-    g_backdrop_effect=s.backdrop_effect;g_dither_size=s.dither_size;g_window_transparency=s.window_transparency;g_window_opacity=s.window_opacity;
+    g_dither_style=s.dither_style;g_backdrop_effect=s.backdrop_effect;g_dither_size=s.dither_size;g_window_transparency=s.window_transparency;g_window_opacity=s.window_opacity;
     g_text_cursor_id=s.tci;g_text_cursor=s.tc;g_text_sel_anchor=s.tsa;
     g_ta_cursor_id=s.taci;g_ta_cursor=s.tac;g_ta_sel_anchor=s.taas;g_ta_scroll_y=s.tasc;g_ta_scroll_target_y=s.tasct;g_dt=s.dt;
     g_effects_enabled=s.effects;
@@ -3942,6 +4064,195 @@ std::string open_file_dialog(const char* title, const FileFilter* filters, int f
 
 namespace internal {
 
+// Runtime-loaded GLX: existing Cairo/X11 build commands keep working.
+// One small shader evaluates coverage; no dither bitmap is generated or read back.
+#if FTUI_HAS_GLX
+struct GpuPresenter {
+    void* library=nullptr; GLXContext context=nullptr; GLXFBConfig config=nullptr;
+    XVisualInfo* visual=nullptr; Colormap colormap=0;
+    GLuint program=0, texture=0; int width=0,height=0;
+    std::string renderer;
+#define FT_GL_FN(name, result, ...) using name##Fn=result(*)(__VA_ARGS__); name##Fn name=nullptr;
+    FT_GL_FN(glXChooseFBConfig,GLXFBConfig*,Display*,int,const int*,int*)
+    FT_GL_FN(glXGetVisualFromFBConfig,XVisualInfo*,Display*,GLXFBConfig)
+    FT_GL_FN(glXCreateNewContext,GLXContext,Display*,GLXFBConfig,int,GLXContext,Bool)
+    FT_GL_FN(glXMakeCurrent,Bool,Display*,GLXDrawable,GLXContext)
+    FT_GL_FN(glXDestroyContext,void,Display*,GLXContext)
+    FT_GL_FN(glXSwapBuffers,void,Display*,GLXDrawable)
+    FT_GL_FN(glCreateShader,GLuint,GLenum)
+    FT_GL_FN(glShaderSource,void,GLuint,GLsizei,const GLchar* const*,const GLint*)
+    FT_GL_FN(glCompileShader,void,GLuint)
+    FT_GL_FN(glGetShaderiv,void,GLuint,GLenum,GLint*)
+    FT_GL_FN(glDeleteShader,void,GLuint)
+    FT_GL_FN(glCreateProgram,GLuint)
+    FT_GL_FN(glAttachShader,void,GLuint,GLuint)
+    FT_GL_FN(glLinkProgram,void,GLuint)
+    FT_GL_FN(glGetProgramiv,void,GLuint,GLenum,GLint*)
+    FT_GL_FN(glDeleteProgram,void,GLuint)
+    FT_GL_FN(glUseProgram,void,GLuint)
+    FT_GL_FN(glGenTextures,void,GLsizei,GLuint*)
+    FT_GL_FN(glDeleteTextures,void,GLsizei,const GLuint*)
+    FT_GL_FN(glBindTexture,void,GLenum,GLuint)
+    FT_GL_FN(glTexParameteri,void,GLenum,GLenum,GLint)
+    FT_GL_FN(glTexImage2D,void,GLenum,GLint,GLint,GLsizei,GLsizei,GLint,GLenum,GLenum,const void*)
+    FT_GL_FN(glTexSubImage2D,void,GLenum,GLint,GLint,GLint,GLsizei,GLsizei,GLenum,GLenum,const void*)
+    FT_GL_FN(glGetUniformLocation,GLint,GLuint,const GLchar*)
+    FT_GL_FN(glUniform1f,void,GLint,GLfloat)
+    FT_GL_FN(glUniform1i,void,GLint,GLint)
+    FT_GL_FN(glUniform2f,void,GLint,GLfloat,GLfloat)
+    FT_GL_FN(glViewport,void,GLint,GLint,GLsizei,GLsizei)
+    FT_GL_FN(glDisable,void,GLenum)
+    FT_GL_FN(glBegin,void,GLenum)
+    FT_GL_FN(glEnd,void)
+    FT_GL_FN(glVertex2f,void,GLfloat,GLfloat)
+    FT_GL_FN(glTexCoord2f,void,GLfloat,GLfloat)
+    FT_GL_FN(glGetString,const GLubyte*,GLenum)
+    FT_GL_FN(glReadBuffer,void,GLenum)
+    FT_GL_FN(glReadPixels,void,GLint,GLint,GLsizei,GLsizei,GLenum,GLenum,void*)
+#undef FT_GL_FN
+    bool choose(Display* dpy) {
+        // GLX installs Xlib close hooks: the loader must outlive every Display.
+        static void* shared_library=dlopen("libGL.so.1",RTLD_LAZY|RTLD_LOCAL);
+        library=shared_library;if(!library)return false;
+        using Proc=void*(*)(const unsigned char*);
+        auto proc=(Proc)dlsym(library,"glXGetProcAddressARB");
+#define FT_LOAD(name) name=(name##Fn)dlsym(library,#name); if(!name&&proc)name=(name##Fn)proc((const unsigned char*)#name); if(!name)return false;
+        FT_LOAD(glXChooseFBConfig)
+        FT_LOAD(glXGetVisualFromFBConfig)
+        FT_LOAD(glXCreateNewContext)
+        FT_LOAD(glXMakeCurrent)
+        FT_LOAD(glXDestroyContext)
+        FT_LOAD(glXSwapBuffers)
+        FT_LOAD(glCreateShader)
+        FT_LOAD(glShaderSource)
+        FT_LOAD(glCompileShader)
+        FT_LOAD(glGetShaderiv)
+        FT_LOAD(glDeleteShader)
+        FT_LOAD(glCreateProgram)
+        FT_LOAD(glAttachShader)
+        FT_LOAD(glLinkProgram)
+        FT_LOAD(glGetProgramiv)
+        FT_LOAD(glDeleteProgram)
+        FT_LOAD(glUseProgram)
+        FT_LOAD(glGenTextures)
+        FT_LOAD(glDeleteTextures)
+        FT_LOAD(glBindTexture)
+        FT_LOAD(glTexParameteri)
+        FT_LOAD(glTexImage2D)
+        FT_LOAD(glTexSubImage2D)
+        FT_LOAD(glGetUniformLocation)
+        FT_LOAD(glUniform1f)
+        FT_LOAD(glUniform1i)
+        FT_LOAD(glUniform2f)
+        FT_LOAD(glViewport)
+        FT_LOAD(glDisable)
+        FT_LOAD(glBegin)
+        FT_LOAD(glEnd)
+        FT_LOAD(glVertex2f)
+        FT_LOAD(glTexCoord2f)
+        FT_LOAD(glGetString)
+        FT_LOAD(glReadBuffer)
+        FT_LOAD(glReadPixels)
+#undef FT_LOAD
+        int attrs[]={GLX_X_RENDERABLE,True,GLX_DRAWABLE_TYPE,GLX_WINDOW_BIT,
+            GLX_RENDER_TYPE,GLX_RGBA_BIT,GLX_DOUBLEBUFFER,True,GLX_RED_SIZE,8,
+            GLX_GREEN_SIZE,8,GLX_BLUE_SIZE,8,GLX_ALPHA_SIZE,8,None};
+        int count=0; auto* configs=glXChooseFBConfig(dpy,DefaultScreen(dpy),attrs,&count);
+        for(int i=0;configs&&i<count;++i) {
+            auto* v=glXGetVisualFromFBConfig(dpy,configs[i]);
+            if(v&&v->depth==32){config=configs[i];visual=v;break;} if(v)XFree(v);
+        }
+        if(configs)XFree(configs); return visual!=nullptr;
+    }
+    bool init(Display* dpy,Window window) {
+        if(!visual)return false;
+        context=glXCreateNewContext(dpy,config,GLX_RGBA_TYPE,nullptr,True);
+        if(!context||!glXMakeCurrent(dpy,window,context))return false;
+        // FT already owns frame pacing; avoid a second implicit swap wait.
+        using Extensions=const char*(*)(Display*,int);using Swap=void(*)(Display*,GLXDrawable,int);
+        auto extensions=(Extensions)dlsym(library,"glXQueryExtensionsString");
+        auto swap=(Swap)dlsym(library,"glXSwapIntervalEXT");
+        const char* names=extensions?extensions(dpy,DefaultScreen(dpy)):nullptr;
+        if(swap&&names&&std::strstr(names,"GLX_EXT_swap_control"))swap(dpy,window,0);
+        const char* r=(const char*)glGetString(GL_RENDERER); renderer=r?r:"unknown";
+        const char* vs=R"GL(#version 120
+void main(){gl_Position=gl_Vertex;gl_TexCoord[0]=gl_MultiTexCoord0;})GL";
+        const char* fs=R"GL(#version 120
+uniform sampler2D ui; uniform float cell,coverage,mode,rounding,pattern,top,bottom,reveal; uniform vec2 size;
+float bayer(vec2 p){
+ vec2 a=mod(floor(p),2.0),b=mod(floor(p/2.0),2.0);
+ float v=2.0*a.x+3.0*a.y-4.0*a.x*a.y;
+ float w=2.0*b.x+3.0*b.y-4.0*b.x*b.y;
+ return (4.0*v+w+0.5)/16.0;
+}
+void main(){
+ vec2 uv=gl_TexCoord[0].xy; vec4 c=texture2D(ui,uv);
+ float mask=1.0;
+ if(mode>0.5){
+  // Ordered spatial coverage over the finished UI, stable in window pixels.
+  vec2 p=vec2(gl_FragCoord.x,size.y-gl_FragCoord.y);
+  float amount=clamp(coverage*mix(top,bottom,p.y/size.y),0.0,1.0);
+  if(pattern<0.5)mask=step(bayer(floor(p/max(cell/4.0,1.0))),amount);
+  else {
+   vec2 f=abs(fract(p/max(cell,1.0))-0.5)*2.0;
+   float radius=sqrt(amount)*1.41421356;
+   mask=1.0-smoothstep(radius-0.5/max(cell,1.0),radius+0.5/max(cell,1.0),length(f));
+   if(amount>=1.0)mask=1.0;if(amount<=0.0)mask=0.0;
+  }
+  if(reveal<1.0)mask*=1.0-smoothstep(reveal*size.y,reveal*size.y+1.0,p.y);
+  if(reveal<=0.0)mask=0.0;
+ } else mask=coverage;
+ vec2 q=abs(gl_FragCoord.xy-size*0.5)-(size*0.5-vec2(rounding));
+ float edge=length(max(q,vec2(0.0)))+min(max(q.x,q.y),0.0)-rounding;
+ mask*=1.0-smoothstep(-0.5,0.5,edge);
+ gl_FragColor=c*mask;
+})GL";
+        GLuint shaders[2]={glCreateShader(GL_VERTEX_SHADER),glCreateShader(GL_FRAGMENT_SHADER)};
+        const char* sources[2]={vs,fs}; bool ok=true;
+        program=glCreateProgram();
+        for(int i=0;i<2;++i){glShaderSource(shaders[i],1,&sources[i],nullptr);glCompileShader(shaders[i]);
+            GLint status=0;glGetShaderiv(shaders[i],GL_COMPILE_STATUS,&status);ok=ok&&status;glAttachShader(program,shaders[i]);}
+        glLinkProgram(program);GLint status=0;glGetProgramiv(program,GL_LINK_STATUS,&status);
+        for(auto shader:shaders)glDeleteShader(shader);
+        if(!ok||!status)return false;
+        glGenTextures(1,&texture);glBindTexture(GL_TEXTURE_2D,texture);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        return true;
+    }
+    void present(Display* dpy,Window window,cairo_surface_t* surface,int w,int h,
+                 WindowTransparency mode,float opacity,int cell,float rounding,const DitherStyle& style={},bool swap=true) {
+        glXMakeCurrent(dpy,window,context);cairo_surface_flush(surface);
+        glBindTexture(GL_TEXTURE_2D,texture);
+        if(width!=w||height!=h){width=w;height=h;
+            glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,w,h,0,GL_BGRA,GL_UNSIGNED_BYTE,nullptr);}
+        glTexSubImage2D(GL_TEXTURE_2D,0,0,0,w,h,GL_BGRA,GL_UNSIGNED_BYTE,cairo_image_surface_get_data(surface));
+        glViewport(0,0,w,h);glDisable(GL_BLEND);glDisable(GL_DEPTH_TEST);glUseProgram(program);
+        auto value=[&](const char* key,float v){glUniform1f(glGetUniformLocation(program,key),v);};
+        glUniform1i(glGetUniformLocation(program,"ui"),0);
+        glUniform2f(glGetUniformLocation(program,"size"),float(w),float(h));
+        value("cell",float(cell));value("coverage",mode==WindowTransparency::Opaque?1.f:opacity);
+        value("mode",mode==WindowTransparency::BayerDither?1.f:0.f);value("rounding",rounding);
+        value("pattern",style.pattern==DitherPattern::Halftone?1.f:0.f);
+        auto unit=[](float v){return std::isfinite(v)?std::max(0.f,std::min(v,1.f)):1.f;};
+        value("top",unit(style.top));value("bottom",unit(style.bottom));value("reveal",unit(style.reveal));
+        glBegin(GL_TRIANGLE_STRIP);
+        glTexCoord2f(0,1);glVertex2f(-1,-1);glTexCoord2f(1,1);glVertex2f(1,-1);
+        glTexCoord2f(0,0);glVertex2f(-1,1);glTexCoord2f(1,0);glVertex2f(1,1);glEnd();
+        glUseProgram(0);if(swap)glXSwapBuffers(dpy,window);
+    }
+    void release(Display* dpy,Window window) {
+        if(context){if(glXMakeCurrent(dpy,window,context)){
+            if(texture)glDeleteTextures(1,&texture);if(program)glDeleteProgram(program);}
+            glXMakeCurrent(dpy,None,nullptr);glXDestroyContext(dpy,context);}
+        if(visual)XFree(visual);if(colormap)XFreeColormap(dpy,colormap);
+        *this={};
+    }
+};
+#endif
+
 struct LinuxImage { cairo_surface_t* surface = nullptr; };
 
 struct PlatformState {
@@ -3949,6 +4260,9 @@ struct PlatformState {
     Atom wm_delete = 0; bool running = false; int width = 0, height = 0;
 };
 struct RendererState {
+#if FTUI_HAS_GLX
+    GpuPresenter gpu;
+#endif
     cairo_surface_t* xlib_surf = nullptr;
     cairo_surface_t* back_surf = nullptr;
     Pixmap           back_px   = 0;
@@ -3983,11 +4297,39 @@ static void pop_popup_scale() { cairo_restore(g_renderer.cr); }
 
 static void set_color(Color c) { cairo_set_source_rgba(g_renderer.cr,c.r,c.g,c.b,c.a); }
 static void sync_native_window_chrome() {}
+static Visual* window_visual() {
+#if FTUI_HAS_GLX
+    if(g_renderer.gpu.visual)return g_renderer.gpu.visual->visual;
+#endif
+    return DefaultVisual(g_platform.display,DefaultScreen(g_platform.display));
+}
+static int window_depth() {
+#if FTUI_HAS_GLX
+    if(g_renderer.gpu.visual)return g_renderer.gpu.visual->depth;
+#endif
+    return DefaultDepth(g_platform.display,DefaultScreen(g_platform.display));
+}
+static Window create_native_window(Display* dpy,Window root,int x,int y,int w,int h) {
+#if FTUI_HAS_GLX
+    const char* enabled=std::getenv("FTUI_GPU");
+    if((!enabled||std::strcmp(enabled,"0"))&&g_renderer.gpu.choose(dpy)) {
+        auto& gpu=g_renderer.gpu;
+        gpu.colormap=XCreateColormap(dpy,root,gpu.visual->visual,AllocNone);
+        XSetWindowAttributes a={};a.colormap=gpu.colormap;a.border_pixel=0;a.background_pixel=0;
+        return XCreateWindow(dpy,root,x,y,w,h,0,gpu.visual->depth,InputOutput,gpu.visual->visual,
+                             CWColormap|CWBorderPixel|CWBackPixel,&a);
+    }
+#endif
+    return XCreateSimpleWindow(dpy,root,x,y,w,h,0,BlackPixel(dpy,DefaultScreen(dpy)),BlackPixel(dpy,DefaultScreen(dpy)));
+}
 static void sync_native_window_transparency() {
     if (!g_platform.display || !g_platform.window) return;
     Atom opacity = XInternAtom(g_platform.display, "_NET_WM_WINDOW_OPACITY", False);
     if (g_window_transparency == WindowTransparency::Plain ||
         g_window_transparency == WindowTransparency::BayerDither) {
+#if FTUI_HAS_GLX
+        if(g_renderer.gpu.program){XDeleteProperty(g_platform.display,g_platform.window,opacity);XFlush(g_platform.display);return;}
+#endif
         unsigned long value = (unsigned long)(clampf(g_window_opacity, 0.20f, 1.0f) * 4294967295.0f + 0.5f);
         XChangeProperty(g_platform.display, g_platform.window, opacity, XA_CARDINAL, 32,
                         PropModeReplace, (unsigned char*)&value, 1);
@@ -4208,19 +4550,36 @@ static bool create_back_buffer(int w, int h) {
     if (g_renderer.cr)       { cairo_destroy(g_renderer.cr);          g_renderer.cr=nullptr; }
     if (g_renderer.back_surf){ cairo_surface_destroy(g_renderer.back_surf); g_renderer.back_surf=nullptr; }
     if (g_renderer.back_px)  { XFreePixmap(dpy,g_renderer.back_px);  g_renderer.back_px=0; }
-    g_renderer.back_px=XCreatePixmap(dpy,g_platform.window,w,h,DefaultDepth(dpy,s));
-    g_renderer.back_surf=cairo_xlib_surface_create(dpy,g_renderer.back_px,DefaultVisual(dpy,s),w,h);
+    #if FTUI_HAS_GLX
+    if(g_renderer.gpu.program)g_renderer.back_surf=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,w,h);
+    else
+#endif
+    {
+        g_renderer.back_px=XCreatePixmap(dpy,g_platform.window,w,h,window_depth());
+        g_renderer.back_surf=cairo_xlib_surface_create(dpy,g_renderer.back_px,window_visual(),w,h);
+    }
     g_renderer.cr=cairo_create(g_renderer.back_surf);
     return cairo_status(g_renderer.cr)==CAIRO_STATUS_SUCCESS;
 }
 
 static bool init_cairo() {
     Display* dpy=g_platform.display; int s=DefaultScreen(dpy);
-    g_renderer.xlib_surf=cairo_xlib_surface_create(dpy,g_platform.window,DefaultVisual(dpy,s),g_platform.width,g_platform.height);
+    #if FTUI_HAS_GLX
+    if(g_renderer.gpu.visual&&!g_renderer.gpu.init(dpy,g_platform.window)) {
+        // Keep the chosen visual/colormap for the Xlib fallback.
+        if(g_renderer.gpu.context){g_renderer.gpu.glXMakeCurrent(dpy,None,nullptr);
+            g_renderer.gpu.glXDestroyContext(dpy,g_renderer.gpu.context);g_renderer.gpu.context=nullptr;}
+        g_renderer.gpu.program=0;
+    }
+#endif
+    g_renderer.xlib_surf=cairo_xlib_surface_create(dpy,g_platform.window,window_visual(),g_platform.width,g_platform.height);
     return create_back_buffer(g_platform.width,g_platform.height);
 }
 
 static void teardown_cairo() {
+#if FTUI_HAS_GLX
+    g_renderer.gpu.release(g_platform.display,g_platform.window);
+#endif
     release_dither_cache();
     if (g_renderer.cr)       { cairo_destroy(g_renderer.cr);          g_renderer.cr=nullptr; }
     if (g_renderer.back_surf){ cairo_surface_destroy(g_renderer.back_surf); g_renderer.back_surf=nullptr; }
@@ -4229,6 +4588,11 @@ static void teardown_cairo() {
 }
 
 static void swap_buffers() {
+#if FTUI_HAS_GLX
+    if(g_renderer.gpu.program){g_renderer.gpu.present(g_platform.display,g_platform.window,
+        g_renderer.back_surf,g_platform.width,g_platform.height,g_window_transparency,
+        g_window_opacity,g_dither_size,g_window_transparency==WindowTransparency::Opaque?0:g_style.rounding,g_dither_style);return;}
+#endif
     if (!g_renderer.xlib_surf||!g_renderer.back_surf) return;
     cairo_t* fc=cairo_create(g_renderer.xlib_surf);
     cairo_set_source_surface(fc,g_renderer.back_surf,0,0);
@@ -4377,6 +4741,9 @@ static void handle_xevent(XEvent& ev) {
         }
         if (ks==XK_Menu || (ks==XK_F10 && g_input.shift_held)) g_input.key_context=true;
         // navigation keys
+        g_input.alt_held=(ev.xkey.state&Mod1Mask)!=0;
+        if(ks==XK_Page_Up)g_input.key_page_up=true;if(ks==XK_Page_Down)g_input.key_page_down=true;
+        if(ks==XK_Home)g_input.key_home=true;if(ks==XK_End)g_input.key_end=true;
         if (ks==XK_BackSpace) g_input.key_backspace=true;
         if (ks==XK_Return||ks==XK_KP_Enter) g_input.key_enter=true;
         if (ks==XK_space) g_input.key_space=true;
@@ -4431,7 +4798,7 @@ bool create_window(const Config& cfg) {
     int s=DefaultScreen(dpy); Window root=RootWindow(dpy,s);
     int x=0,y=0;
     if (cfg.center_window){x=(DisplayWidth(dpy,s)-cfg.width)/2;y=(DisplayHeight(dpy,s)-cfg.height)/2;}
-    g_platform.window=XCreateSimpleWindow(dpy,root,x,y,cfg.width,cfg.height,0,BlackPixel(dpy,s),BlackPixel(dpy,s));
+    g_platform.window=create_native_window(dpy,root,x,y,cfg.width,cfg.height);
     g_platform.wm_delete=XInternAtom(dpy,"WM_DELETE_WINDOW",False);
     XSetWMProtocols(dpy,g_platform.window,&g_platform.wm_delete,1);
     const char* title=cfg.title?cfg.title:"FTUI App";
@@ -4452,6 +4819,7 @@ bool create_window(const Config& cfg) {
     g_redraw_requested = true;
     g_backdrop_effect = cfg.backdrop_effect;
     g_dither_size = cfg.dither_size < 1 ? 1 : (cfg.dither_size > 32 ? 32 : cfg.dither_size);
+    g_dither_style={};
     g_window_transparency = cfg.window_transparency;
     g_window_opacity = clampf(cfg.window_opacity, 0.20f, 1.0f);
     g_scroll_y = g_scroll_target_y = 0;
@@ -4480,6 +4848,7 @@ bool pump() {
     g_input.key_backspace=g_input.key_enter=g_input.key_space=g_input.key_escape=g_input.key_tab=g_input.key_shift_tab=false;
     g_input.key_left=g_input.key_right=g_input.key_up=g_input.key_down=false;
     g_input.key_ctrl_c=g_input.key_ctrl_v=false;
+    g_input.key_page_up=g_input.key_page_down=g_input.key_home=g_input.key_end=false;
     g_input.text_input_count=0; memset(g_input.text_input,0,sizeof(g_input.text_input));
     if (!g_redraw_requested) wait_for_x_event();
     bool saw_event = false;
@@ -4543,9 +4912,15 @@ void begin() {
     g_ctx.cursor_y=g_ctx.content_region.y-g_scroll_y;
     if(!g_renderer.cr) return;
     apply_font();
-    // clear
+    // SOURCE avoids accumulating alpha across frames.
+    cairo_set_operator(g_renderer.cr,CAIRO_OPERATOR_SOURCE);
     set_color(g_style.background); cairo_paint(g_renderer.cr);
-    if (g_window_transparency == WindowTransparency::BayerDither) {
+    cairo_set_operator(g_renderer.cr,CAIRO_OPERATOR_OVER);
+    bool cpu_dither=true;
+#if FTUI_HAS_GLX
+    cpu_dither=!g_renderer.gpu.program;
+#endif
+    if (cpu_dither && g_window_transparency == WindowTransparency::BayerDither) {
         draw_dither_backdrop_panel({0.0f, 0.0f, (float)g_platform.width, (float)g_platform.height}, 1.0f);
     }
     // content clip
@@ -4658,7 +5033,7 @@ void open_child_window(const Config& cfg, std::function<void()> fn) {
         CmdState cmd; float fps,fpsa; int fpsf, frame_limit_fps; bool redraw_requested;
         struct timespec lt;
         int tci,tc,tsa,taci,tac,taas,dither_size; float tasc,tasct,dt,window_opacity;
-        BackdropEffect backdrop_effect; WindowTransparency window_transparency;
+        BackdropEffect backdrop_effect; WindowTransparency window_transparency; DitherStyle dither_style;
         bool effects;
         MotionSlot motion[256];
         TabFxSlot tab_fx[32];
@@ -4687,7 +5062,7 @@ void open_child_window(const Config& cfg, std::function<void()> fn) {
     s.sc=g_scroll_y;s.sct=g_scroll_target_y;s.ch=g_content_height;s.sbd=g_sb_dragging;s.sbmy=g_sb_drag_mouse_y;s.sbms0=g_sb_drag_scroll0;
     s.cmd=g_cmd;s.fps=g_fps;s.fpsa=g_fps_accum;s.fpsf=g_fps_frames;s.lt=g_last_time;
     s.frame_limit_fps=g_frame_limit_fps;s.redraw_requested=g_redraw_requested;
-    s.backdrop_effect=g_backdrop_effect;s.dither_size=g_dither_size;s.window_transparency=g_window_transparency;s.window_opacity=g_window_opacity;
+    s.dither_style=g_dither_style;s.backdrop_effect=g_backdrop_effect;s.dither_size=g_dither_size;s.window_transparency=g_window_transparency;s.window_opacity=g_window_opacity;
     s.tci=g_text_cursor_id;s.tc=g_text_cursor;s.tsa=g_text_sel_anchor;
     s.taci=g_ta_cursor_id;s.tac=g_ta_cursor;s.taas=g_ta_sel_anchor;s.tasc=g_ta_scroll_y;s.tasct=g_ta_scroll_target_y;s.dt=g_dt;
     s.effects=g_effects_enabled;
@@ -4749,7 +5124,7 @@ void open_child_window(const Config& cfg, std::function<void()> fn) {
     g_xim=nullptr; g_xic=nullptr;
     int screen=DefaultScreen(dpy); int cx=0,cy=0;
     if(cfg.center_window){cx=(DisplayWidth(dpy,screen)-cfg.width)/2;cy=(DisplayHeight(dpy,screen)-cfg.height)/2;}
-    g_platform.window=XCreateSimpleWindow(dpy,RootWindow(dpy,screen),cx,cy,cfg.width,cfg.height,0,BlackPixel(dpy,screen),BlackPixel(dpy,screen));
+    g_platform.window=create_native_window(dpy,RootWindow(dpy,screen),cx,cy,cfg.width,cfg.height);
     g_platform.wm_delete=XInternAtom(dpy,"WM_DELETE_WINDOW",False);
     XSetWMProtocols(dpy,g_platform.window,&g_platform.wm_delete,1);
     XSetTransientForHint(dpy,g_platform.window,parent);
@@ -4772,7 +5147,7 @@ void open_child_window(const Config& cfg, std::function<void()> fn) {
     g_scroll_y=s.sc;g_scroll_target_y=s.sct;g_content_height=s.ch;g_sb_dragging=s.sbd;g_sb_drag_mouse_y=s.sbmy;g_sb_drag_scroll0=s.sbms0;
     g_cmd=s.cmd;g_fps=s.fps;g_fps_accum=s.fpsa;g_fps_frames=s.fpsf;g_last_time=s.lt;
     g_frame_limit_fps=s.frame_limit_fps;g_redraw_requested=s.redraw_requested;
-    g_backdrop_effect=s.backdrop_effect;g_dither_size=s.dither_size;g_window_transparency=s.window_transparency;g_window_opacity=s.window_opacity;
+    g_dither_style=s.dither_style;g_backdrop_effect=s.backdrop_effect;g_dither_size=s.dither_size;g_window_transparency=s.window_transparency;g_window_opacity=s.window_opacity;
     g_text_cursor_id=s.tci;g_text_cursor=s.tc;g_text_sel_anchor=s.tsa;
     g_ta_cursor_id=s.taci;g_ta_cursor=s.tac;g_ta_sel_anchor=s.taas;g_ta_scroll_y=s.tasc;g_ta_scroll_target_y=s.tasct;g_dt=s.dt;
     g_effects_enabled=s.effects;
@@ -7397,6 +7772,564 @@ void content(std::function<void()> fn) {
     g_ctx.cursor_y = saved_cursor_y;
     if (used_h > parent_row.row_height) parent_row.row_height = used_h;
     g_ctx.row_ctx = parent_row;
+}
+
+namespace graphics_detail {
+static bool valid(Rect r){return std::isfinite(r.x)&&std::isfinite(r.y)&&std::isfinite(r.w)&&std::isfinite(r.h)&&r.w>0&&r.h>0;}
+#ifdef _WIN32
+static D2D1_COLOR_F color(Color c){return D2D1::ColorF(c.r,c.g,c.b,c.a);}
+static D2D1_RECT_F rect(Rect r){return D2D1::RectF(r.x,r.y,r.x+r.w,r.y+r.h);}
+static IDWriteTextFormat* format(void* factory,const TextStyle& style){
+    if(!factory)return nullptr;IDWriteTextFormat* fmt=nullptr;
+    auto family=internal::utf8_to_wide(style.family?style.family:"Segoe UI");
+    ((IDWriteFactory*)factory)->CreateTextFormat(family.c_str(),nullptr,
+        style.bold?DWRITE_FONT_WEIGHT_BOLD:DWRITE_FONT_WEIGHT_NORMAL,DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,std::max(1.f,style.size),L"",&fmt);
+    if(fmt){fmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        fmt->SetTextAlignment(style.align==Align::Center?DWRITE_TEXT_ALIGNMENT_CENTER:style.align==Align::End?DWRITE_TEXT_ALIGNMENT_TRAILING:DWRITE_TEXT_ALIGNMENT_LEADING);
+        if(style.ellipsis){IDWriteInlineObject* sign=nullptr;auto* f=(IDWriteFactory*)factory;
+            if(SUCCEEDED(f->CreateEllipsisTrimmingSign(fmt,&sign))){DWRITE_TRIMMING trim={DWRITE_TRIMMING_GRANULARITY_CHARACTER,0,0};fmt->SetTrimming(&trim,sign);sign->Release();}}}
+    return fmt;
+}
+static void brush(void* context,Color color,const std::function<void(ID2D1RenderTarget*,ID2D1SolidColorBrush*)>& fn){
+    auto* target=(ID2D1RenderTarget*)context;if(!target)return;ID2D1SolidColorBrush* b=nullptr;
+    if(SUCCEEDED(target->CreateSolidColorBrush(graphics_detail::color(color),&b))){fn(target,b);b->Release();}
+}
+#else
+static void color(void* context,Color c){cairo_set_source_rgba((cairo_t*)context,c.r,c.g,c.b,c.a);}
+static void font(void* context,const TextStyle& style){auto* c=(cairo_t*)context;
+    cairo_select_font_face(c,style.family?style.family:"sans-serif",CAIRO_FONT_SLANT_NORMAL,
+        style.bold?CAIRO_FONT_WEIGHT_BOLD:CAIRO_FONT_WEIGHT_NORMAL);cairo_set_font_size(c,std::max(1.f,style.size));}
+#endif
+}
+void Canvas::fill(Rect r,Color color,float radius){
+    if(!context_||!graphics_detail::valid(r))return;
+#ifdef _WIN32
+    graphics_detail::brush(context_,color,[&](auto* t,auto* b){t->FillRoundedRectangle(D2D1::RoundedRect(graphics_detail::rect(r),radius,radius),b);});
+#else
+    graphics_detail::color(context_,color);internal::rrect_path((cairo_t*)context_,r.x,r.y,r.w,r.h,radius);cairo_fill((cairo_t*)context_);
+#endif
+}
+void Canvas::stroke(Rect r,Color color,float thickness,float radius){
+    if(!context_||!graphics_detail::valid(r)||thickness<=0)return;
+#ifdef _WIN32
+    graphics_detail::brush(context_,color,[&](auto* t,auto* b){t->DrawRoundedRectangle(D2D1::RoundedRect(graphics_detail::rect(r),radius,radius),b,thickness);});
+#else
+    auto* c=(cairo_t*)context_;graphics_detail::color(context_,color);cairo_set_line_width(c,thickness);internal::rrect_path(c,r.x,r.y,r.w,r.h,radius);cairo_stroke(c);
+#endif
+}
+void Canvas::line(float x1,float y1,float x2,float y2,Color color,float thickness){
+    if(!context_||thickness<=0)return;
+#ifdef _WIN32
+    graphics_detail::brush(context_,color,[&](auto* t,auto* b){t->DrawLine(D2D1::Point2F(x1,y1),D2D1::Point2F(x2,y2),b,thickness);});
+#else
+    auto* c=(cairo_t*)context_;graphics_detail::color(context_,color);cairo_set_line_width(c,thickness);cairo_move_to(c,x1,y1);cairo_line_to(c,x2,y2);cairo_stroke(c);
+#endif
+}
+void Canvas::circle(float x,float y,float radius,Color color){
+    if(!context_||radius<=0)return;
+#ifdef _WIN32
+    graphics_detail::brush(context_,color,[&](auto* t,auto* b){t->FillEllipse(D2D1::Ellipse(D2D1::Point2F(x,y),radius,radius),b);});
+#else
+    auto* c=(cairo_t*)context_;graphics_detail::color(context_,color);cairo_new_sub_path(c);cairo_arc(c,x,y,radius,0,2*M_PI);cairo_fill(c);
+#endif
+}
+float Canvas::text_width(const char* text,const TextStyle& style){
+    if(!context_||!text)return 0;
+#ifdef _WIN32
+    auto* fmt=graphics_detail::format(fonts_,style);if(!fmt)return 0;
+    auto w=internal::utf8_to_wide(text);IDWriteTextLayout* layout=nullptr;float result=0;
+    if(SUCCEEDED(((IDWriteFactory*)fonts_)->CreateTextLayout(w.c_str(),(UINT32)w.size(),fmt,1e6f,1e6f,&layout))){DWRITE_TEXT_METRICS m={};layout->GetMetrics(&m);result=m.widthIncludingTrailingWhitespace;layout->Release();}
+    fmt->Release();return result;
+#else
+    auto* c=(cairo_t*)context_;cairo_save(c);graphics_detail::font(c,style);cairo_text_extents_t ext;cairo_text_extents(c,text,&ext);cairo_restore(c);return float(ext.x_advance);
+#endif
+}
+void Canvas::text(const char* text,Rect r,Color color,const TextStyle& style){
+    if(!context_||!text||!graphics_detail::valid(r))return;
+#ifdef _WIN32
+    auto* fmt=graphics_detail::format(fonts_,style);if(!fmt)return;auto w=internal::utf8_to_wide(text);
+    graphics_detail::brush(context_,color,[&](auto* t,auto* b){t->DrawText(w.c_str(),(UINT32)w.size(),fmt,graphics_detail::rect(r),b,D2D1_DRAW_TEXT_OPTIONS_CLIP);});fmt->Release();
+#else
+    auto* c=(cairo_t*)context_;cairo_save(c);graphics_detail::font(c,style);
+    std::string value=text;cairo_text_extents_t ext;cairo_text_extents(c,value.c_str(),&ext);
+    if(style.ellipsis&&ext.x_advance>r.w){
+        std::string tail="…";cairo_text_extents_t e;cairo_text_extents(c,tail.c_str(),&e);
+        while(!value.empty()&&ext.x_advance+e.x_advance>r.w){value.resize(internal::utf8_retreat(value.c_str(),(int)value.size()));cairo_text_extents(c,value.c_str(),&ext);}
+        value+=tail;cairo_text_extents(c,value.c_str(),&ext);
+    }
+    cairo_font_extents_t f;cairo_font_extents(c,&f);float x=r.x;
+    if(style.align==Align::Center)x+=(r.w-float(ext.x_advance))*.5f;
+    if(style.align==Align::End)x+=r.w-float(ext.x_advance);
+    cairo_rectangle(c,r.x,r.y,r.w,r.h);cairo_clip(c);graphics_detail::color(c,color);
+    cairo_move_to(c,x,r.y+(r.h-f.height)*.5+f.ascent);cairo_show_text(c,value.c_str());cairo_restore(c);
+#endif
+}
+void Canvas::pixels(const unsigned char* pixels,int w,int h,int stride,Rect r){
+    if(!context_||!pixels||w<=0||h<=0||w>INT32_MAX/4||stride<w*4||!graphics_detail::valid(r))return;
+#ifdef _WIN32
+    auto* t=(ID2D1RenderTarget*)context_;ID2D1Bitmap* bitmap=nullptr;
+    auto props=D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED));
+    if(SUCCEEDED(t->CreateBitmap(D2D1::SizeU(w,h),pixels,stride,props,&bitmap))){t->DrawBitmap(bitmap,graphics_detail::rect(r));bitmap->Release();}
+#else
+    auto* c=(cairo_t*)context_;auto* surface=cairo_image_surface_create_for_data(const_cast<unsigned char*>(pixels),CAIRO_FORMAT_ARGB32,w,h,stride);
+    cairo_save(c);cairo_rectangle(c,r.x,r.y,r.w,r.h);cairo_clip(c);cairo_translate(c,r.x,r.y);cairo_scale(c,r.w/w,r.h/h);
+    cairo_set_source_surface(c,surface,0,0);cairo_pattern_set_filter(cairo_get_source(c),CAIRO_FILTER_NEAREST);cairo_paint(c);cairo_restore(c);cairo_surface_destroy(surface);
+#endif
+}
+void Canvas::clipped(Rect r,const std::function<void(Canvas&)>& draw){
+    if(!context_||!draw||!graphics_detail::valid(r))return;
+#ifdef _WIN32
+    auto* t=(ID2D1RenderTarget*)context_;t->PushAxisAlignedClip(graphics_detail::rect(r),D2D1_ANTIALIAS_MODE_ALIASED);
+    try{draw(*this);}catch(...){t->PopAxisAlignedClip();throw;}t->PopAxisAlignedClip();
+#else
+    auto* c=(cairo_t*)context_;cairo_save(c);cairo_rectangle(c,r.x,r.y,r.w,r.h);cairo_clip(c);
+    try{draw(*this);}catch(...){cairo_restore(c);throw;}cairo_restore(c);
+#endif
+}
+namespace graphics_detail {
+static Canvas current_canvas(){
+#ifdef _WIN32
+    return Canvas(internal::g_renderer.target,internal::g_renderer.dwrite_factory);
+#else
+    return Canvas(internal::g_renderer.cr);
+#endif
+}
+}
+FrameInput frame_input(){using namespace internal;FrameInput f;
+    f.mouse_x=g_input.mouse_x;f.mouse_y=g_input.mouse_y;f.wheel=g_input.wheel_y;f.delta_seconds=g_dt;
+    f.pressed=g_input.mouse_pressed;f.released=g_input.mouse_released;f.down=g_input.mouse_down;
+    f.enter=g_input.key_enter;f.escape=g_input.key_escape;f.up=g_input.key_up;f.down_key=g_input.key_down;
+    f.left=g_input.key_left;f.right=g_input.key_right;f.shift=g_input.shift_held;f.ctrl=g_input.ctrl_held;
+    f.alt=g_input.alt_held;f.page_up=g_input.key_page_up;f.page_down=g_input.key_page_down;f.home=g_input.key_home;f.end=g_input.key_end;
+    f.focused=g_input.focused;f.text.assign(g_input.text_input,g_input.text_input_count);return f;
+}
+bool canvas(const char* id,float height,const CanvasDraw& draw){using namespace internal;
+    if(!g_drawing||!draw||!std::isfinite(height)||height<=0)return false;
+    auto r=next_rect(height);int key=hash_str(id?id:"canvas");auto c=graphics_detail::current_canvas();
+    c.clipped({r.x,r.y,r.w,r.h},[&](Canvas& target){draw(target,{r.x,r.y,r.w,r.h},frame_input());});
+    mark_last_item(key,r,rect_contains(r,g_input.mouse_x,g_input.mouse_y),false);return true;
+}
+bool paint(const CanvasDraw& draw){using namespace internal;if(!g_drawing||!draw)return false;
+    auto c=graphics_detail::current_canvas();Rect r={0,0,float(g_platform.width),float(g_platform.height)};
+    c.clipped(r,[&](Canvas& target){draw(target,r,frame_input());});return true;
+}
+GraphicsInfo graphics_info(){GraphicsInfo info;
+#if defined(__linux__) && FTUI_HAS_GLX
+    info.gpu_dither=internal::g_renderer.gpu.program!=0;
+    info.renderer=info.gpu_dither?internal::g_renderer.gpu.renderer:"Cairo/X11";
+#elif defined(_WIN32)
+    info.renderer="Direct2D (cached dither brush)";
+#else
+    info.renderer="Cairo/X11";
+#endif
+    return info;
+}
+int result_list(const char* label,const std::vector<ResultRow>& rows,ResultListState& state,const ResultListOptions& opt){using namespace internal;
+    if(!g_drawing)return -1;
+    int n=(int)rows.size(),visible=std::max(1,opt.visible_rows),preview=std::max(0,opt.preview_rows),activated=-1;
+    if(n==0){state={};state.selected=-1;return -1;}
+    state.selected=std::max(0,std::min(state.selected,n-1));
+    int previous=state.selected;
+    auto enabled=[&](int start,int direction){for(int i=start;i>=0&&i<n;i+=direction)if(rows[i].enabled)return i;return -1;};
+    if(!rows[state.selected].enabled){int next=enabled(state.selected,1);state.selected=next>=0?next:enabled(state.selected,-1);}
+    int id=hash_str(label?label:"results");auto r=next_rect((std::max(1.f,opt.row_height)+std::max(0.f,opt.gap))*(visible+preview)-std::max(0.f,opt.gap));
+    bool interactive=widget_interaction_enabled();
+    if(interactive&&opt.keyboard){
+        if(g_input.key_down){int next=enabled(state.selected+1,1);if(next>=0)state.selected=next;}
+        if(g_input.key_up){int next=enabled(state.selected<0?n-1:state.selected-1,-1);if(next>=0)state.selected=next;}
+        if(g_input.key_page_down){int next=enabled(std::min(n-1,state.selected+visible),1);if(next>=0)state.selected=next;}
+        if(g_input.key_page_up){int next=enabled(std::max(0,state.selected-visible),-1);if(next>=0)state.selected=next;}
+        if(g_input.key_home)state.selected=enabled(0,1);
+        if(g_input.key_end)state.selected=enabled(n-1,-1);
+        if(g_input.key_enter&&state.selected>=0)activated=state.selected;
+    }
+    int maximum=std::max(0,n-visible);state.first=std::max(0,std::min(state.first,maximum));
+    if(state.selected!=previous||state.selected<state.first||state.selected>=state.first+visible){
+        if(state.selected<state.first)state.first=std::max(0,state.selected);
+        if(state.selected>=state.first+visible)state.first=state.selected-visible+1;
+    }
+    if(interactive&&rect_contains(r,g_input.mouse_x,g_input.mouse_y)&&g_input.wheel_y!=0){
+        state.first=std::max(0,std::min(maximum,state.first+(g_input.wheel_y>0?-1:1)));g_input.wheel_y=0;
+        if(state.selected>=0)state.selected=std::max(state.first,std::min(state.selected,state.first+visible-1));
+        if(state.selected>=0&&!rows[state.selected].enabled){int next=enabled(state.first,1);state.selected=next<state.first+visible?next:-1;}
+    }
+    auto c=graphics_detail::current_canvas();
+    c.clipped({r.x,r.y,r.w,r.h},[&](Canvas& c){
+        for(int slot=0;slot<visible+preview&&state.first+slot<n;++slot){int index=state.first+slot;auto& row=rows[index];
+            Rect box={r.x,r.y+slot*(std::max(1.f,opt.row_height)+std::max(0.f,opt.gap)),r.w,std::max(1.f,opt.row_height)};
+            bool active=slot<visible&&row.enabled&&interactive;
+            bool hover=active&&rect_contains({box.x,box.y,box.w,box.h},g_input.mouse_x,g_input.mouse_y);
+            if(hover&&opt.select_on_hover)state.selected=index;
+            if(hover&&g_input.mouse_pressed){state.selected=index;g_ctx.active_id=id;}
+            if(hover&&g_input.mouse_released&&g_ctx.active_id==id){state.selected=index;activated=index;g_ctx.active_id=0;}
+            float alpha=slot<visible?1.f:clamp01(opt.preview_opacity);if(!row.enabled)alpha*=.4f;
+            auto ink=[&](ColorRole role){Color color=resolve_color(role);color.a*=alpha;return color;};
+            c.fill(box,ink(hover?ColorRole::ButtonHover:ColorRole::Panel),g_style.rounding);
+            if(index==state.selected&&slot<visible)c.stroke(box,ink(ColorRole::Accent),1.5f,g_style.rounding);
+            float x=box.x+14;
+            if(row.icon){
+#ifdef _WIN32
+                float saved=g_draw_fx_opacity;g_draw_fx_opacity*=alpha;
+                draw_image_handle(row.icon,{x,box.y+10,box.h-20,box.h-20});g_draw_fx_opacity=saved;
+#else
+                cairo_push_group(g_renderer.cr);draw_image_handle(row.icon,{x,box.y+10,box.h-20,box.h-20});
+                cairo_pop_group_to_source(g_renderer.cr);cairo_paint_with_alpha(g_renderer.cr,alpha);
+#endif
+                x+=box.h-8;
+            }
+            TextStyle title;title.size=g_style.font_size;title.bold=row.pinned;
+            float badge=(!row.badge.empty()?std::min(box.w*.35f,c.text_width(row.badge.c_str(),title)+16):0);
+            c.text(row.title.c_str(),{x,box.y+6,std::max(1.f,box.x+box.w-x-16-badge),row.subtitle.empty()?box.h-12:box.h*.48f},ink(ColorRole::Text),title);
+            if(!row.subtitle.empty()){TextStyle sub;sub.size=std::max(10.f,g_style.font_size-3);
+                c.text(row.subtitle.c_str(),{x,box.y+box.h*.5f,std::max(1.f,box.x+box.w-x-16-badge),box.h*.4f},ink(ColorRole::TextDim),sub);}
+            if(badge){TextStyle b;b.size=12;b.align=Align::End;c.text(row.badge.c_str(),{box.x+box.w-badge-12,box.y,badge,box.h},ink(ColorRole::Accent),b);}
+        }
+    });
+    if(g_input.mouse_released&&g_ctx.active_id==id)g_ctx.active_id=0;
+    mark_last_item(id,r,rect_contains(r,g_input.mouse_x,g_input.mouse_y),false);
+    return activated;
+}
+void status_pill(Canvas& c,Rect r,const char* label,Color bg,Color fg){c.fill(r,bg,r.h*.5f);TextStyle t;t.size=12;t.bold=true;t.align=Align::Center;c.text(label,r,fg,t);}
+void waveform(Canvas& c,Rect r,const float* values,int count,Color color,float thickness){
+    if(!values||count<=0||!graphics_detail::valid(r))return;
+    for(int i=0;i<count;++i){float value=std::isfinite(values[i])?std::min(1.f,std::fabs(values[i])):0.f;
+        float x=r.x+(i+.5f)*r.w/count;float h=std::max(thickness,value*r.h);
+        c.line(x,r.y+(r.h-h)*.5f,x,r.y+(r.h+h)*.5f,color,thickness);}
+}
+
+namespace graphics_detail {
+#ifdef _WIN32
+static bool options(HWND window,const WindowOptions& o){
+    if(!window)return false;
+    auto style=GetWindowLongPtrW(window,GWL_STYLE);
+    style=o.borderless?(style&~WS_OVERLAPPEDWINDOW)|WS_POPUP:(style&~WS_POPUP)|WS_OVERLAPPEDWINDOW;
+    SetWindowLongPtrW(window,GWL_STYLE,style);
+    auto ex=GetWindowLongPtrW(window,GWL_EXSTYLE);
+    ex=o.skip_taskbar?(ex|WS_EX_TOOLWINDOW)&~WS_EX_APPWINDOW:(ex&~WS_EX_TOOLWINDOW)|WS_EX_APPWINDOW;
+    ex=o.no_activate?ex|WS_EX_NOACTIVATE:ex&~WS_EX_NOACTIVATE;
+    ex=o.click_through?ex|WS_EX_TRANSPARENT:ex&~WS_EX_TRANSPARENT;
+    bool add_layer=o.click_through&&!(ex&WS_EX_LAYERED);if(add_layer)ex|=WS_EX_LAYERED;
+    SetWindowLongPtrW(window,GWL_EXSTYLE,ex);
+    if(add_layer)SetLayeredWindowAttributes(window,0,255,LWA_ALPHA);
+    SetWindowPos(window,o.topmost?HWND_TOPMOST:HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_FRAMECHANGED);
+    return true;
+}
+#else
+static bool options(Display* dpy,Window window,const WindowOptions& o){
+    if(!dpy||!window)return false;
+    // Motif decoration hint is respected by X11 WMs and XWayland compositors.
+    struct Hints {unsigned long flags,functions,decorations;long input;unsigned long status;};
+    Hints hints={2,0,o.borderless?0ul:1ul,0,0};Atom motif=XInternAtom(dpy,"_MOTIF_WM_HINTS",False);
+    XChangeProperty(dpy,window,motif,motif,32,PropModeReplace,(unsigned char*)&hints,5);
+    XWMHints wm={};wm.flags=InputHint;wm.input=o.no_activate?False:True;XSetWMHints(dpy,window,&wm);
+    Atom type=XInternAtom(dpy,"_NET_WM_WINDOW_TYPE",False);
+    Atom value=XInternAtom(dpy,o.skip_taskbar?"_NET_WM_WINDOW_TYPE_UTILITY":"_NET_WM_WINDOW_TYPE_NORMAL",False);
+    XChangeProperty(dpy,window,type,XA_ATOM,32,PropModeReplace,(unsigned char*)&value,1);
+    // Send state changes to a running WM, and set initial hints before mapping.
+    Atom state=XInternAtom(dpy,"_NET_WM_STATE",False);
+    const char* names[]={"_NET_WM_STATE_ABOVE","_NET_WM_STATE_SKIP_TASKBAR","_NET_WM_STATE_SKIP_PAGER"};
+    bool enabled[]={o.topmost,o.skip_taskbar,o.skip_taskbar};
+    XWindowAttributes attr={};XGetWindowAttributes(dpy,window,&attr);
+    if(attr.map_state==IsUnmapped){std::vector<Atom> states;
+        for(int i=0;i<3;++i)if(enabled[i])states.push_back(XInternAtom(dpy,names[i],False));
+        XChangeProperty(dpy,window,state,XA_ATOM,32,PropModeReplace,(unsigned char*)states.data(),(int)states.size());
+    }else for(int i=0;i<3;++i){XEvent ev={};ev.xclient.type=ClientMessage;ev.xclient.window=window;
+        ev.xclient.message_type=state;ev.xclient.format=32;ev.xclient.data.l[0]=enabled[i]?1:0;
+        ev.xclient.data.l[1]=XInternAtom(dpy,names[i],False);ev.xclient.data.l[3]=1;
+        XSendEvent(dpy,DefaultRootWindow(dpy),False,SubstructureNotifyMask|SubstructureRedirectMask,&ev);}
+    bool success=true;
+    static void* ext=dlopen("libXext.so.6",RTLD_LAZY|RTLD_LOCAL);
+    if(ext){using Shape=void(*)(Display*,Window,int,int,int,XRectangle*,int,int,int);
+        auto shape=(Shape)dlsym(ext,"XShapeCombineRectangles");
+        using Mask=void(*)(Display*,Window,int,int,int,Pixmap,int);
+        auto mask=(Mask)dlsym(ext,"XShapeCombineMask");
+        using Query=Bool(*)(Display*,int*,int*);auto query=(Query)dlsym(ext,"XShapeQueryExtension");
+        int event=0,error=0;
+        if(shape&&query&&query(dpy,&event,&error)){
+            XRectangle rect={0,0,(unsigned short)attr.width,(unsigned short)attr.height};
+            if(o.click_through)shape(dpy,window,2,0,0,&rect,0,0,0); // Empty ShapeInput.
+            else if(mask)mask(dpy,window,2,0,0,None,0); // Restore default shape, including future resizes.
+            else success=false;
+        }else success=!o.click_through;
+    }else success=!o.click_through;
+    XFlush(dpy);return success;
+}
+#endif
+static Rect anchored(Rect work,float width,float height,float margin,OverlayAnchor anchor){
+    margin=std::max(0.f,margin);width=std::max(1.f,std::min(width,work.w-2*margin));height=std::max(1.f,std::min(height,work.h-2*margin));
+    float x=work.x+(work.w-width)*.5f,y=work.y+margin;
+    if(anchor==OverlayAnchor::TopLeft||anchor==OverlayAnchor::BottomLeft)x=work.x+margin;
+    if(anchor==OverlayAnchor::TopRight||anchor==OverlayAnchor::BottomRight)x=work.x+work.w-width-margin;
+    if(anchor==OverlayAnchor::Center)y=work.y+(work.h-height)*.5f;
+    if(anchor==OverlayAnchor::BottomLeft||anchor==OverlayAnchor::BottomCenter||anchor==OverlayAnchor::BottomRight)y=work.y+work.h-height-margin;
+    x=std::max(work.x,std::min(x,work.x+work.w-width));y=std::max(work.y,std::min(y,work.y+work.h-height));
+    return {x,y,width,height};
+}
+struct OverlayImpl {
+    OverlayConfig config; std::string title; bool shown=false,positioned=false; FrameInput input;
+    float scale=1; int x=0,y=0,width=0,height=0;
+#ifdef _WIN32
+    HWND window=nullptr;HDC dc=nullptr;HBITMAP bitmap=nullptr;HGDIOBJ old=nullptr;
+    ID2D1Factory* factory=nullptr;ID2D1DCRenderTarget* target=nullptr;IDWriteFactory* fonts=nullptr;
+    void* pixels=nullptr;
+    static LRESULT CALLBACK proc(HWND window,UINT msg,WPARAM wp,LPARAM lp){
+        if(msg==WM_NCCREATE){auto* cs=(CREATESTRUCTW*)lp;SetWindowLongPtrW(window,GWLP_USERDATA,(LONG_PTR)cs->lpCreateParams);}
+        auto* self=(OverlayImpl*)GetWindowLongPtrW(window,GWLP_USERDATA);
+        if(self){
+            if(msg==WM_MOUSEMOVE){self->input.mouse_x=GET_X_LPARAM(lp)/self->scale;self->input.mouse_y=GET_Y_LPARAM(lp)/self->scale;}
+            if(msg==WM_LBUTTONDOWN){self->input.pressed=self->input.down=true;SetCapture(window);}
+            if(msg==WM_LBUTTONUP){self->input.released=true;self->input.down=false;ReleaseCapture();}
+            if(msg==WM_MOUSEWHEEL)self->input.wheel+=GET_WHEEL_DELTA_WPARAM(wp)/float(WHEEL_DELTA);
+            if(msg==WM_KEYDOWN){if(wp==VK_RETURN)self->input.enter=true;if(wp==VK_ESCAPE)self->input.escape=true;
+                if(wp==VK_UP)self->input.up=true;if(wp==VK_DOWN)self->input.down_key=true;}
+            if(msg==WM_SETFOCUS)self->input.focused=true;if(msg==WM_KILLFOCUS)self->input.focused=false;
+        }
+        if(self&&msg==WM_MOUSEACTIVATE&&self->config.window.no_activate)return MA_NOACTIVATE;
+        if(self&&msg==WM_NCHITTEST&&self->config.window.click_through)return HTTRANSPARENT;
+        if(msg==WM_ERASEBKGND)return 1;
+        if(msg==WM_CLOSE){ShowWindow(window,SW_HIDE);if(self)self->shown=false;return 0;}
+        return DefWindowProcW(window,msg,wp,lp);
+    }
+#else
+    Display* display=nullptr;Window window=0;Colormap colormap=0;Visual* visual=nullptr;
+    cairo_surface_t* surface=nullptr; cairo_surface_t* front=nullptr;
+#if FTUI_HAS_GLX
+    internal::GpuPresenter gpu;
+#endif
+#endif
+    void place(){
+        if(positioned)return;Rect work;
+#ifdef _WIN32
+        HWND fg=GetForegroundWindow();HMONITOR monitor=MonitorFromWindow(fg,MONITOR_DEFAULTTONEAREST);
+        MONITORINFO info={sizeof(info)};GetMonitorInfoW(monitor,&info);auto area=info.rcWork;
+        scale=std::max(1.f,GetDpiForWindow(fg)/96.f);work={float(area.left),float(area.top),float(area.right-area.left),float(area.bottom-area.top)};
+#else
+        int s=DefaultScreen(display);work={0,0,float(DisplayWidth(display,s)),float(DisplayHeight(display,s))};
+        scale=std::max(1.f,std::min(4.f,internal::detect_dpi(display)/96.f));
+#if __has_include(<X11/extensions/Xinerama.h>)
+        static void* lib=dlopen("libXinerama.so.1",RTLD_LAZY|RTLD_LOCAL);
+        if(lib){using Screens=XineramaScreenInfo*(*)(Display*,int*);using Active=Bool(*)(Display*);
+            auto screens=(Screens)dlsym(lib,"XineramaQueryScreens");auto active=(Active)dlsym(lib,"XineramaIsActive");
+            Window root,child;int rx=0,ry=0,wx,wy;unsigned mask;
+            XQueryPointer(display,DefaultRootWindow(display),&root,&child,&rx,&ry,&wx,&wy,&mask);
+            int n=0;auto* monitors=screens&&active&&active(display)?screens(display,&n):nullptr;
+            for(int i=0;monitors&&i<n;++i){auto m=monitors[i];if(rx>=m.x_org&&ry>=m.y_org&&rx<m.x_org+m.width&&ry<m.y_org+m.height)
+                work={float(m.x_org),float(m.y_org),float(m.width),float(m.height)};}
+            if(monitors)XFree(monitors);}
+#endif
+        auto cardinal=[&](const char* name,unsigned long offset,unsigned long count,std::vector<unsigned long>& values){
+            Atom actual;int format;unsigned long n,left;unsigned char* data=nullptr;
+            XGetWindowProperty(display,DefaultRootWindow(display),XInternAtom(display,name,False),offset,count,False,XA_CARDINAL,&actual,&format,&n,&left,&data);
+            if(data&&format==32)values.assign((unsigned long*)data,(unsigned long*)data+n);if(data)XFree(data);
+        };
+        std::vector<unsigned long> desktop,area;cardinal("_NET_CURRENT_DESKTOP",0,1,desktop);
+        cardinal("_NET_WORKAREA",desktop.empty()?0:desktop[0]*4,4,area);
+        if(area.size()==4){float x=std::max(work.x,float((long)area[0])),y=std::max(work.y,float((long)area[1]));
+            float right=std::min(work.x+work.w,float((long)area[0])+area[2]),bottom=std::min(work.y+work.h,float((long)area[1])+area[3]);
+            if(right>x&&bottom>y)work={x,y,right-x,bottom-y};}
+#endif
+        auto r=anchored(work,config.width*scale,config.height*scale,config.margin*scale,config.anchor);
+        x=(int)r.x;y=(int)r.y;width=(int)r.w;height=(int)r.h;
+    }
+    ~OverlayImpl(){
+#ifdef _WIN32
+        if(target)target->Release();if(factory)factory->Release();if(fonts)fonts->Release();
+        if(dc&&old)SelectObject(dc,old);if(bitmap)DeleteObject(bitmap);if(dc)DeleteDC(dc);if(window)DestroyWindow(window);
+#else
+        if(surface)cairo_surface_destroy(surface);if(front)cairo_surface_destroy(front);
+        if(display){
+#if FTUI_HAS_GLX
+            gpu.release(display,window);
+#endif
+            if(window)XDestroyWindow(display,window);if(colormap)XFreeColormap(display,colormap);XCloseDisplay(display);}
+#endif
+    }
+};
+}
+void* native_window(){
+#ifdef _WIN32
+    return internal::g_platform.hwnd;
+#else
+    return (void*)(uintptr_t)internal::g_platform.window;
+#endif
+}
+bool set_window_options(const WindowOptions& o){
+#ifdef _WIN32
+    return graphics_detail::options(internal::g_platform.hwnd,o);
+#else
+    return graphics_detail::options(internal::g_platform.display,internal::g_platform.window,o);
+#endif
+}
+void set_window_visible(bool visible,bool activate){
+#ifdef _WIN32
+    auto window=internal::g_platform.hwnd;if(window){ShowWindow(window,visible?(activate?SW_SHOW:SW_SHOWNOACTIVATE):SW_HIDE);if(visible&&activate)SetForegroundWindow(window);}
+#else
+    auto* dpy=internal::g_platform.display;auto win=internal::g_platform.window;if(!dpy||!win)return;
+    if(visible){XMapRaised(dpy,win);if(activate){XEvent event={};event.xclient.type=ClientMessage;event.xclient.window=win;
+        event.xclient.message_type=XInternAtom(dpy,"_NET_ACTIVE_WINDOW",False);event.xclient.format=32;event.xclient.data.l[0]=1;
+        XSendEvent(dpy,DefaultRootWindow(dpy),False,SubstructureRedirectMask|SubstructureNotifyMask,&event);}}
+    else XUnmapWindow(dpy,win);XFlush(dpy);
+#endif
+    request_redraw();
+}
+void set_window_position(int x,int y){
+#ifdef _WIN32
+    if(internal::g_platform.hwnd)SetWindowPos(internal::g_platform.hwnd,nullptr,x,y,0,0,SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOZORDER);
+#else
+    if(internal::g_platform.display&&internal::g_platform.window){XMoveWindow(internal::g_platform.display,internal::g_platform.window,x,y);XFlush(internal::g_platform.display);}
+#endif
+}
+Overlay::~Overlay(){close();}
+void Overlay::close(){delete (graphics_detail::OverlayImpl*)impl_;impl_=nullptr;}
+bool Overlay::create(const OverlayConfig& config){
+    close();if(config.width<=0||config.height<=0||config.width>16384||config.height>16384)return false;
+    auto* p=new graphics_detail::OverlayImpl;p->config=config;p->title=config.title?config.title:"FT Overlay";
+    p->config.title=p->title.c_str();impl_=p;
+#ifdef _WIN32
+    // The native Windows overlay provides per-pixel alpha; shader masking is GLX-only.
+    if(config.transparency==WindowTransparency::BayerDither){close();return false;}
+    p->place();
+    WNDCLASSEXW wc={sizeof(wc)};wc.lpfnWndProc=graphics_detail::OverlayImpl::proc;wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"FT_Overlay";
+    if(!RegisterClassExW(&wc)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS){close();return false;}
+    p->window=CreateWindowExW(WS_EX_LAYERED|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,L"FT_Overlay",internal::utf8_to_wide(p->title.c_str()).c_str(),WS_POPUP,p->x,p->y,p->width,p->height,nullptr,nullptr,wc.hInstance,p);
+    if(!p->window||!graphics_detail::options(p->window,config.window)){close();return false;}
+    if(FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,&p->factory))||FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,__uuidof(IDWriteFactory),(IUnknown**)&p->fonts))){close();return false;}
+    auto props=D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_SOFTWARE,D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED));
+    if(FAILED(p->factory->CreateDCRenderTarget(&props,&p->target))){close();return false;}
+    return true;
+#else
+    p->display=XOpenDisplay(nullptr);if(!p->display){close();return false;}p->place();
+    auto* dpy=p->display;Window root=DefaultRootWindow(dpy);int depth=32;
+#if FTUI_HAS_GLX
+    const char* enabled=std::getenv("FTUI_GPU");
+    if((!enabled||std::strcmp(enabled,"0"))&&p->gpu.choose(dpy)){p->visual=p->gpu.visual->visual;depth=p->gpu.visual->depth;}
+#endif
+    if(!p->visual){XVisualInfo visual={};if(!XMatchVisualInfo(dpy,DefaultScreen(dpy),32,TrueColor,&visual)){close();return false;}p->visual=visual.visual;}
+    p->colormap=XCreateColormap(dpy,root,p->visual,AllocNone);XSetWindowAttributes a={};a.colormap=p->colormap;a.background_pixel=0;a.border_pixel=0;
+    p->window=XCreateWindow(dpy,root,p->x,p->y,p->width,p->height,0,depth,InputOutput,p->visual,CWColormap|CWBackPixel|CWBorderPixel,&a);
+    XStoreName(dpy,p->window,p->title.c_str());
+    if(!graphics_detail::options(dpy,p->window,config.window)){close();return false;}
+    XSelectInput(dpy,p->window,ExposureMask|StructureNotifyMask|PointerMotionMask|ButtonPressMask|ButtonReleaseMask|KeyPressMask|FocusChangeMask);
+#if FTUI_HAS_GLX
+    if(p->gpu.visual&&!p->gpu.init(dpy,p->window)){
+        p->gpu.release(dpy,p->window);
+    }
+#endif
+    if(config.transparency==WindowTransparency::BayerDither&&!graphics_info().gpu_dither){close();return false;}
+    return true;
+#endif
+}
+bool Overlay::render(const std::function<void(Canvas&,Rect)>& draw){
+    auto* p=(graphics_detail::OverlayImpl*)impl_;if(!p||!draw)return false;
+    int old_w=p->width,old_h=p->height;p->place();
+#ifdef _WIN32
+    if(!p->bitmap||old_w!=p->width||old_h!=p->height){
+        if(p->dc&&p->old)SelectObject(p->dc,p->old);if(p->bitmap)DeleteObject(p->bitmap);if(p->dc)DeleteDC(p->dc);
+        p->dc=CreateCompatibleDC(nullptr);BITMAPINFO bmi={};bmi.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth=p->width;bmi.bmiHeader.biHeight=-p->height;bmi.bmiHeader.biPlanes=1;bmi.bmiHeader.biBitCount=32;bmi.bmiHeader.biCompression=BI_RGB;
+        p->bitmap=CreateDIBSection(p->dc,&bmi,DIB_RGB_COLORS,&p->pixels,nullptr,0);
+        if(!p->dc||!p->bitmap)return false;p->old=SelectObject(p->dc,p->bitmap);
+    }
+    RECT bounds={0,0,p->width,p->height};if(FAILED(p->target->BindDC(p->dc,&bounds)))return false;
+    p->target->SetDpi(96*p->scale,96*p->scale);p->target->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+    p->target->BeginDraw();p->target->Clear(D2D1::ColorF(0,0));Canvas c(p->target,p->fonts);
+    try{draw(c,{0,0,p->width/p->scale,p->height/p->scale});}catch(...){p->target->EndDraw();throw;}
+    if(FAILED(p->target->EndDraw()))return false;
+    POINT dst={p->x,p->y},src={0,0};SIZE size={p->width,p->height};
+    BLENDFUNCTION blend={AC_SRC_OVER,0,(BYTE)(internal::clamp01(p->config.opacity)*255),AC_SRC_ALPHA};
+    if(!UpdateLayeredWindow(p->window,nullptr,&dst,&size,p->dc,&src,0,&blend,ULW_ALPHA))return false;
+    SetWindowPos(p->window,p->config.window.topmost?HWND_TOPMOST:HWND_NOTOPMOST,p->x,p->y,p->width,p->height,SWP_NOACTIVATE|SWP_SHOWWINDOW);
+    ShowWindow(p->window,p->config.window.no_activate?SW_SHOWNOACTIVATE:SW_SHOW);
+#else
+    auto* dpy=p->display;
+    if(!p->surface||old_w!=p->width||old_h!=p->height){
+        if(p->surface)cairo_surface_destroy(p->surface);if(p->front)cairo_surface_destroy(p->front);
+        p->surface=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,p->width,p->height);
+        p->front=cairo_xlib_surface_create(dpy,p->window,p->visual,p->width,p->height);
+        XResizeWindow(dpy,p->window,p->width,p->height);
+        graphics_detail::options(dpy,p->window,p->config.window);
+    }
+    auto* cr=cairo_create(p->surface);cairo_set_operator(cr,CAIRO_OPERATOR_CLEAR);cairo_paint(cr);cairo_set_operator(cr,CAIRO_OPERATOR_OVER);
+    cairo_scale(cr,p->scale,p->scale);Canvas c(cr);
+    try{draw(c,{0,0,p->width/p->scale,p->height/p->scale});}catch(...){cairo_destroy(cr);throw;}
+    bool success=cairo_status(cr)==CAIRO_STATUS_SUCCESS;cairo_destroy(cr);if(!success)return false;
+    XMoveWindow(dpy,p->window,p->x,p->y);XMapWindow(dpy,p->window);
+#if FTUI_HAS_GLX
+    if(p->gpu.program)p->gpu.present(dpy,p->window,p->surface,p->width,p->height,p->config.transparency,
+        internal::clamp01(p->config.opacity),p->config.dither_size,p->config.rounding*p->scale,p->config.dither);
+    else
+#endif
+    {cr=cairo_create(p->front);cairo_set_operator(cr,CAIRO_OPERATOR_SOURCE);cairo_set_source_surface(cr,p->surface,0,0);cairo_paint(cr);
+        cairo_destroy(cr);Atom opacity=XInternAtom(dpy,"_NET_WM_WINDOW_OPACITY",False);
+        unsigned long value=(unsigned long)(internal::clamp01(p->config.opacity)*4294967295.0);
+        XChangeProperty(dpy,p->window,opacity,XA_CARDINAL,32,PropModeReplace,(unsigned char*)&value,1);XFlush(dpy);}
+#endif
+    p->shown=true;return true;
+}
+void Overlay::hide(){auto* p=(graphics_detail::OverlayImpl*)impl_;if(!p)return;
+#ifdef _WIN32
+    ShowWindow(p->window,SW_HIDE);
+#else
+    XUnmapWindow(p->display,p->window);XFlush(p->display);
+#endif
+    p->shown=false;
+}
+bool Overlay::visible() const {auto* p=(graphics_detail::OverlayImpl*)impl_;return p&&p->shown;}
+bool Overlay::set_window_options(const WindowOptions& o){auto* p=(graphics_detail::OverlayImpl*)impl_;if(!p)return false;
+#ifdef _WIN32
+    bool ok=graphics_detail::options(p->window,o);
+#else
+    bool ok=graphics_detail::options(p->display,p->window,o);
+#endif
+    if(ok)p->config.window=o;return ok;
+}
+void Overlay::set_position(int x,int y){auto* p=(graphics_detail::OverlayImpl*)impl_;if(!p)return;p->x=x;p->y=y;p->positioned=true;}
+bool Overlay::set_transparency(WindowTransparency mode,float opacity,const DitherStyle& style){
+    auto* p=(graphics_detail::OverlayImpl*)impl_;if(!p)return false;
+    if(mode==WindowTransparency::BayerDither&&!graphics_info().gpu_dither)return false;
+    p->config.transparency=mode;p->config.opacity=std::isfinite(opacity)?internal::clamp01(opacity):1.f;p->config.dither=style;return true;
+}
+FrameInput Overlay::poll_input(){
+    auto* p=(graphics_detail::OverlayImpl*)impl_;if(!p)return {};
+    bool down=p->input.down,focus=p->input.focused;float x=p->input.mouse_x,y=p->input.mouse_y;
+    p->input={};p->input.down=down;p->input.focused=focus;p->input.mouse_x=x;p->input.mouse_y=y;
+#ifdef _WIN32
+    MSG msg;while(PeekMessageW(&msg,p->window,0,0,PM_REMOVE)){TranslateMessage(&msg);DispatchMessageW(&msg);}
+    p->input.ctrl=(GetKeyState(VK_CONTROL)&0x8000)!=0;p->input.shift=(GetKeyState(VK_SHIFT)&0x8000)!=0;
+#else
+    while(XPending(p->display)){XEvent e;XNextEvent(p->display,&e);if(e.xany.window!=p->window)continue;
+        if(e.type==MotionNotify){p->input.mouse_x=e.xmotion.x/p->scale;p->input.mouse_y=e.xmotion.y/p->scale;}
+        if(e.type==ButtonPress||e.type==ButtonRelease){p->input.mouse_x=e.xbutton.x/p->scale;p->input.mouse_y=e.xbutton.y/p->scale;
+            if(e.xbutton.button==Button1){p->input.down=e.type==ButtonPress;p->input.pressed=e.type==ButtonPress;p->input.released=e.type==ButtonRelease;}
+            if(e.type==ButtonPress&&e.xbutton.button==Button4)p->input.wheel+=1;
+            if(e.type==ButtonPress&&e.xbutton.button==Button5)p->input.wheel-=1;}
+        if(e.type==FocusIn)p->input.focused=true;if(e.type==FocusOut)p->input.focused=false;
+        if(e.type==KeyPress){KeySym key=0;char text[64];int n=XLookupString(&e.xkey,text,sizeof(text),&key,nullptr);
+            p->input.enter=key==XK_Return;p->input.escape=key==XK_Escape;p->input.up=key==XK_Up;p->input.down_key=key==XK_Down;
+            p->input.ctrl=(e.xkey.state&ControlMask)!=0;p->input.shift=(e.xkey.state&ShiftMask)!=0;
+            if(n>0)p->input.text.append(text,n);}
+    }
+#endif
+    return p->input;
+}
+
+void* Overlay::native_window() const {auto* p=(graphics_detail::OverlayImpl*)impl_;if(!p)return nullptr;
+#ifdef _WIN32
+    return p->window;
+#else
+    return (void*)(uintptr_t)p->window;
+#endif
+}
+GraphicsInfo Overlay::graphics_info() const {GraphicsInfo info;auto* p=(graphics_detail::OverlayImpl*)impl_;if(!p)return info;
+#if defined(__linux__) && FTUI_HAS_GLX
+    info.gpu_dither=p->gpu.program!=0;info.renderer=p->gpu.renderer;
+#elif defined(_WIN32)
+    info.renderer="Direct2D layered alpha overlay";
+#else
+    info.renderer="Cairo/X11 alpha overlay";
+#endif
+    return info;
 }
 
 } // namespace ftui
@@ -14752,5 +15685,47 @@ inline void clipboard_view(const char* label, ClipboardViewState& state, int row
     }
     code_view(id.c_str(),state.text.c_str(),rows);
 }
+
+using DitherStyle=ftui::DitherStyle;
+using DitherPattern=ftui::DitherPattern;
+inline void set_dither_style(const DitherStyle& style){if(detail::render_mode()==Mode::Gui)ftui::set_dither_style(style);}
+using Rect=ftui::Rect;
+using Canvas=ftui::Canvas;
+using TextStyle=ftui::TextStyle;
+using FrameInput=ftui::FrameInput;
+using CanvasDraw=ftui::CanvasDraw;
+using GraphicsInfo=ftui::GraphicsInfo;
+struct ResultRow {
+    std::string id,title,subtitle,badge;
+    ImageHandle* icon=nullptr;bool pinned=false,enabled=true;
+};
+using ResultListState=ftui::ResultListState;
+using ResultListOptions=ftui::ResultListOptions;
+using WindowOptions=ftui::WindowOptions;
+using OverlayAnchor=ftui::OverlayAnchor;
+using OverlayConfig=ftui::OverlayConfig;
+using Overlay=ftui::Overlay;
+using ftui::status_pill;
+using ftui::waveform;
+inline bool canvas(const char* id,float height,const CanvasDraw& draw){return detail::render_mode()==Mode::Gui&&ftui::canvas(id,height,draw);}
+inline bool paint(const CanvasDraw& draw){return detail::render_mode()==Mode::Gui&&ftui::paint(draw);}
+inline FrameInput frame_input(){return detail::render_mode()==Mode::Gui?ftui::frame_input():FrameInput{};}
+inline GraphicsInfo graphics_info(){return detail::render_mode()==Mode::Gui?ftui::graphics_info():GraphicsInfo{};}
+inline int result_list(const char* id,const std::vector<ResultRow>& rows,ResultListState& state,const ResultListOptions& options={}){
+    if(detail::render_mode()==Mode::Gui){
+        std::vector<ftui::ResultRow> native;native.reserve(rows.size());
+        for(auto& row:rows)native.push_back({row.id,row.title,row.subtitle,row.badge,row.icon?row.icon->gui:nullptr,row.pinned,row.enabled});
+        return ftui::result_list(id,native,state,options);
+    }
+    std::vector<std::string> labels;std::vector<const char*> items;
+    for(auto& row:rows)labels.push_back(row.title+(row.subtitle.empty()?"":" — "+row.subtitle));
+    for(auto& label:labels)items.push_back(label.c_str());
+    bool changed=ft::listbox(id,items.data(),(int)items.size(),&state.selected,std::max(1,options.visible_rows));
+    return changed&&state.selected>=0&&state.selected<(int)rows.size()&&rows[state.selected].enabled?state.selected:-1;
+}
+inline bool set_window_options(const WindowOptions& options){return detail::render_mode()==Mode::Gui&&ftui::set_window_options(options);}
+inline void set_window_visible(bool visible,bool activate=true){if(detail::render_mode()==Mode::Gui)ftui::set_window_visible(visible,activate);}
+inline void set_window_position(int x,int y){if(detail::render_mode()==Mode::Gui)ftui::set_window_position(x,y);}
+inline void* native_window(){return detail::render_mode()==Mode::Gui?ftui::native_window():nullptr;}
 
 } // namespace ft

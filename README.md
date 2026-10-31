@@ -13,6 +13,18 @@ syntax as the primary API and routes the same app code to three backends:
 The intended application API is `ft::`. The original backend namespaces are
 still included as escape hatches when a program deliberately wants one backend.
 
+## Launcher graphics and desktop overlays
+
+FT now includes custom canvases, rich result rows with dimmed preview rows,
+independent transparent recording/caption HUDs, click-through/non-activating
+window controls and monitor anchors. Linux optionally uses a runtime-loaded GLX
+fragment shader for real Bayer/halftone transparency over the finished interface,
+including gradient coverage and caller-controlled reveal. Windows overlays use
+native per-pixel alpha; the new shader mask is currently Linux-only.
+
+See [graphics API and portability](docs/graphics.md) and the runnable
+[launcher + recording overlay example](examples/ft_graphics.cpp).
+
 ## Goals
 
 - One header: copy `ft.hpp` into a C++17 project.

@@ -1,0 +1,136 @@
+{
+  "snapshot": "2026-11-10",
+  "project": "ft",
+  "status": "prerelease local-work snapshot",
+  "artifacts": [
+    {
+      "path": "build/ft_combined_smoke",
+      "size": 815736,
+      "sha256": "5f1bdf35aae82b93ce8ed765647edb30f6b416428929a328d193747ec6d9e26d"
+    },
+    {
+      "path": "build/ft_data_widgets",
+      "size": 839688,
+      "sha256": "c206c7e7de5adc30fa29cb1dd35c9707b38ba2f1dc3996ce979a6538c9927d48"
+    },
+    {
+      "path": "build/ft_graphics",
+      "size": 819904,
+      "sha256": "0e3c0b173c8370bc8006ede1ebacb91dc413f10d832e6e42651008f77b64e9a8"
+    },
+    {
+      "path": "build/ft_paper_ink",
+      "size": 867480,
+      "sha256": "df046630bcaf9f37bb69fb807a3993cb128e9589bf80b319e5718a151c2252f0"
+    },
+    {
+      "path": "build/ftht/compile_overwatch",
+      "size": 848800,
+      "sha256": "5502fba41082f851b42b7264fb587101d0e54cfea81aa9683b86e6ae6bd83829"
+    },
+    {
+      "path": "build/ftht/device_panel",
+      "size": 816928,
+      "sha256": "4c969a82681bb674088bbd55d60eef626976f8fd4dc86a19aec7a2a9f5cd15f8"
+    },
+    {
+      "path": "build/ftht/http_showcase",
+      "size": 812456,
+      "sha256": "bfd06f786e65020b3fd2c91d76c2944fd3af5f3177a68d3d8425bfe69c02c209"
+    },
+    {
+      "path": "build/ftht/login_draw_demo",
+      "size": 807136,
+      "sha256": "60043be7c37a9bcb382f9a8b2f4282c6d284a7bdcb812ef195f6bfd541a27343"
+    },
+    {
+      "path": "build/ftht/login_form_demo",
+      "size": 807120,
+      "sha256": "27e993084951821dd98041574ace517d3a64c0fde585147cffae5c69f8d0aaa4"
+    },
+    {
+      "path": "build/ftui/benchmark",
+      "size": 808888,
+      "sha256": "2eb3a2884eab88504badfd54210c37b3f336fb0cfafaf1cb25784d5429aa5aaa"
+    },
+    {
+      "path": "build/ftui/control_panel",
+      "size": 808144,
+      "sha256": "25d357080d25bb4f047767f33bbf8b9259fa6371cdb555a25b2896e7523dc509"
+    },
+    {
+      "path": "build/ftui/log_viewer",
+      "size": 807632,
+      "sha256": "9dbd5ead3606d38e8a263da815f23805350ccc078f9af684531345a383affbeb"
+    },
+    {
+      "path": "build/ftui/navigation_status",
+      "size": 807616,
+      "sha256": "ca774eb5eaaabb80772d7cc59c91d7370ec9392b9460d6d6ea73e310fe7bd444"
+    },
+    {
+      "path": "build/ftui/showcase",
+      "size": 834224,
+      "sha256": "abdc46d58a24b03c191270f1021dd40756588dca5ea57753e2d84ad564e5d12a"
+    },
+    {
+      "path": "build-release/ft-paper-ink.exe",
+      "size": 14876068,
+      "sha256": "115d5f681b946bd58762740f3422351ca6082c5ca8d8aad7e7c66b268bd0729e"
+    }
+  ],
+  "checks": [
+    {
+      "job": "ftdc",
+      "passed": true,
+      "command": "cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release && cmake --build build-release -j2 && ctest --test-dir build-release --output-on-failure"
+    },
+    {
+      "job": "ftti",
+      "passed": true,
+      "command": "make BUILD_DIR=build-release CXXFLAGS=\"-std=c++17 -O2 -DNDEBUG\" -j2"
+    },
+    {
+      "job": "ftht",
+      "passed": true,
+      "command": "mkdir -p build-release; for file in examples/*.cpp; do c++ \"$file\" -std=c++17 -O2 -DNDEBUG -pthread -o \"build-release/$(basename \"$file\" .cpp)\" || exit; done"
+    },
+    {
+      "job": "ftui",
+      "passed": true,
+      "command": "mkdir -p build-release && c++ demo.cpp -std=c++17 -O2 -DNDEBUG $(pkg-config --cflags --libs cairo x11) -pthread -o build-release/ftui-demo"
+    },
+    {
+      "job": "ftgd",
+      "passed": true,
+      "command": "make CXXFLAGS=\"-std=c++17 -O2 -DNDEBUG -Wall -Wextra\" all test counter-menu -j2"
+    },
+    {
+      "job": "ftsh",
+      "passed": false,
+      "command": "go test ./... && mkdir -p build-release && go build -trimpath -ldflags=\"-s -w\" -o build-release/ftsh ."
+    },
+    {
+      "job": "ft-combined-copy",
+      "passed": true,
+      "command": "CXXFLAGS=\"-std=c++17 -O2 -DNDEBUG\" sh scripts/build_demos.sh"
+    },
+    {
+      "job": "ft",
+      "passed": true,
+      "command": "CXXFLAGS=\"-std=c++17 -O2 -DNDEBUG\" sh scripts/build_demos.sh && c++ examples/ft_paper_ink.cpp -std=c++17 -O2 -DNDEBUG $(pkg-config --cflags --libs cairo x11) -pthread -o build/ft_paper_ink && ./build/ft_combined_smoke --self-test"
+    },
+    {
+      "job": "ftsh-retry",
+      "passed": true,
+      "command": ""
+    },
+    {
+      "job": "ft-legacy-mirror",
+      "passed": true,
+      "command": ""
+    }
+  ],
+  "notes": [],
+  "runtime": "Linux x86_64 dynamic system libraries for ELF binaries; .exe cross-compiled Windows x64; APK preview/debug; OXT platform independent. Source/API compatibility and hardware behavior are not implied by compilation."
+}

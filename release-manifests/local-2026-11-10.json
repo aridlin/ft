@@ -1,0 +1,76 @@
+{
+  "snapshot": "2026-11-10",
+  "project": "ft-legacy-mirror",
+  "status": "prerelease local-work snapshot",
+  "artifacts": [
+    {
+      "path": "build/ft_combined_smoke",
+      "size": 614144,
+      "sha256": "052403a04adc1bebd9056be128be7d8d2e53891971a416a01d8b2be258d6be23"
+    },
+    {
+      "path": "build/ft_data_widgets",
+      "size": 646328,
+      "sha256": "a31a05234d25f2ba13666b2d32bb138b8f8de3ddd7059dc4299d45732ab3448e"
+    },
+    {
+      "path": "build/ftht/compile_overwatch",
+      "size": 647272,
+      "sha256": "7f83195e2ea413afe8303ad344e39831c152fd4673a0ef5f2dd67ca62900b426"
+    },
+    {
+      "path": "build/ftht/device_panel",
+      "size": 623560,
+      "sha256": "8e8b766b02e6e1004ca302fe7952678bb0a1660527293f4e7c77c0f0df691d33"
+    },
+    {
+      "path": "build/ftht/http_showcase",
+      "size": 610904,
+      "sha256": "28d181753b7e1fe01a07efc17b9d23974dfea3ebc8d8e7b13d1cb3b652a7c298"
+    },
+    {
+      "path": "build/ftht/login_draw_demo",
+      "size": 605552,
+      "sha256": "f206e5d6351e24ecc9baf6fc764bc3d19099077b227f7675ce319671446d0996"
+    },
+    {
+      "path": "build/ftht/login_form_demo",
+      "size": 609624,
+      "sha256": "06ebb73fd523fc0740b584500d4884f720ecf00a2d4807d0dcc74707d2a5a846"
+    },
+    {
+      "path": "build/ftui/benchmark",
+      "size": 615520,
+      "sha256": "52e5bf94b3a2d0a7d2ff76207ae3eed8fb8a6765b0241cd9a7ba82ccf20adc67"
+    },
+    {
+      "path": "build/ftui/control_panel",
+      "size": 614776,
+      "sha256": "5b3e7ad3093ebf3ff2109d001441b9081a2728122fc714a537e29002dc95ccdd"
+    },
+    {
+      "path": "build/ftui/log_viewer",
+      "size": 610168,
+      "sha256": "601960cf31089b65d76793ac53c5b1cb02cec5106f796fb3466018db23e69d3e"
+    },
+    {
+      "path": "build/ftui/navigation_status",
+      "size": 610472,
+      "sha256": "75c2ca1a9d198b90fd1100000cfaa589d928a80f40987106139e68d293fde678"
+    },
+    {
+      "path": "build/ftui/showcase",
+      "size": 641208,
+      "sha256": "a5aa4271a46d8b1335cf050f1a61f9c5aef9554ec054e877681511ffc7a2778d"
+    }
+  ],
+  "checks": [
+    {
+      "job": "ft-legacy-mirror",
+      "passed": true,
+      "command": ""
+    }
+  ],
+  "notes": [],
+  "runtime": "Linux x86_64 dynamic system libraries for ELF binaries; .exe cross-compiled Windows x64; APK preview/debug; OXT platform independent. Source/API compatibility and hardware behavior are not implied by compilation."
+}

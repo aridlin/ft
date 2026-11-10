@@ -55,6 +55,10 @@ ft::button("Review");
 
 Balance each push with a pop in the same render path. `set_next_color()` affects the next consuming widget. Buttons also accept a `ColorRole` or explicit `Color` overload. See [API types](api.md#types) for the full set of roles and defaults.
 
+## Deep themes
+
+Use `ft::set_deep_theme("paper-ink")` for the complete Paper Ink GUI/web appearance. [Deep themes](deep-themes.md) covers its native C++ painter, embedded CSS, bundled font, demo, and registration API for future themes. Terminal continues using its regular renderer.
+
 ## Modals, disabled controls, and focus
 
 Open a modal in response to an event, then call `modal()` every frame where it may appear:

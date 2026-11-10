@@ -31,7 +31,7 @@ independent HUD windows, shader availability and the Linux/Windows distinction.
 
 Windows uses Direct2D/DirectWrite and platform windowing APIs. Linux uses X11/Cairo. Blur effects are Windows-specific; dither support is broader. Window opacity/transparency also depends on the desktop compositor. A runtime flag cannot make unsupported platform effects available.
 
-`set_window_icon()` accepts a native icon handle (HICON on Windows); Linux ignores the configured native icon pointer. Built-in icon variants are `Symbol` and `SymbolWithText`. `WindowTransparency` includes `Opaque`, `Plain`, `BayerDither`, and `Blur`; `BackdropEffect` includes `Blur` and `BayerDither`.
+Every native FT window receives the built-in FT icon by default. Linux publishes 32, 64, 128 and 256-pixel ARGB variants through `_NET_WM_ICON`; Windows uses its native icon handles. `set_window_icon_builtin()` supports `Symbol` and `SymbolWithText` on both platforms. `set_window_icon()` / `Config::icon` accept Windows HICON handles; Linux apps can replace `_NET_WM_ICON` with their app-specific icon after creation, as SoyScope does. Theme changes preserve the current icon. `WindowTransparency` includes `Opaque`, `Plain`, `BayerDither`, and `Blur`; `BackdropEffect` includes `Blur` and `BayerDither`.
 
 ## Terminal behavior
 

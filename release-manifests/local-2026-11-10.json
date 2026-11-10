@@ -1,0 +1,71 @@
+{
+  "snapshot": "2026-11-10",
+  "project": "ft-combined-copy",
+  "status": "prerelease local-work snapshot",
+  "artifacts": [
+    {
+      "path": "build/ft_combined_smoke",
+      "size": 566928,
+      "sha256": "2aa2331fb0c3245720b32bcb7c7f37db7a659041490bccc2febd68c457383746"
+    },
+    {
+      "path": "build/ftht/compile_overwatch",
+      "size": 613832,
+      "sha256": "6f29e275be9b136c56bb68fef651358576d154ec2bd6f1186a49eb5c114e0452"
+    },
+    {
+      "path": "build/ftht/device_panel",
+      "size": 581896,
+      "sha256": "e87c0a85d745cd352ae86d18efe30daf9e47c67620850c43ea264c21d1cbab1b"
+    },
+    {
+      "path": "build/ftht/http_showcase",
+      "size": 577424,
+      "sha256": "6ae89d71a9bdabc96b0418187c606b18646434ee678d4bf31150591ede043737"
+    },
+    {
+      "path": "build/ftht/login_draw_demo",
+      "size": 568016,
+      "sha256": "732748c9892ac85228e290ce002c6b34847a944e7ada8695cabb7e45963fc5d0"
+    },
+    {
+      "path": "build/ftht/login_form_demo",
+      "size": 576184,
+      "sha256": "377e97b73d3ce3ab151087504b2eea91edd319fe45a8749344081fabf2209eb5"
+    },
+    {
+      "path": "build/ftui/benchmark",
+      "size": 577952,
+      "sha256": "6dcb98e71d339c48a52417c040e9e1f57d7dc2ec5ecdff7f1b7f0f48f4afb37c"
+    },
+    {
+      "path": "build/ftui/control_panel",
+      "size": 577208,
+      "sha256": "245c8b0df37d44bd34aee038c8dcd3f00b9436868666e4a787c24cce4e2d688c"
+    },
+    {
+      "path": "build/ftui/log_viewer",
+      "size": 576696,
+      "sha256": "de94f1a39ee0729dcf2d02db4be34eea2380e4b32733d535d2a44b1245e3595e"
+    },
+    {
+      "path": "build/ftui/navigation_status",
+      "size": 581096,
+      "sha256": "b1944d71f9f6cf2b526e7a1422e42d8a62b7df3121cf07986e82a804c1fa31a0"
+    },
+    {
+      "path": "build/ftui/showcase",
+      "size": 603584,
+      "sha256": "99153abbf39531848d6d14f802c72c2242cc5d7b138a34af5084def8b2263105"
+    }
+  ],
+  "checks": [
+    {
+      "job": "ft-combined-copy",
+      "passed": true,
+      "command": "CXXFLAGS=\"-std=c++17 -O2 -DNDEBUG\" sh scripts/build_demos.sh"
+    }
+  ],
+  "notes": [],
+  "runtime": "Linux x86_64 dynamic system libraries for ELF binaries; .exe cross-compiled Windows x64; APK preview/debug; OXT platform independent. Source/API compatibility and hardware behavior are not implied by compilation."
+}

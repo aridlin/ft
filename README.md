@@ -804,11 +804,18 @@ TUI scrolling supports normal terminal wheel events, including two-finger
 touchpad scrolling in terminal emulators that report wheel escape sequences. FT
 enables SGR mouse mode for TUI apps. Wheel-down scrolls the page down and a
 right-edge scrollbar appears when the rendered page is taller than the terminal.
+The scrollbar is interactive: drag the thumb to scrub the page, or click the
+track above/below it to page up or down.
 
 Widget-local scroll still works for text areas, log views, list boxes, and
 `scroll_area()`. Those widgets consume the wheel only while the pointer is over
 the widget; otherwise the same wheel event scrolls the whole page. Arrow keys
 continue to scroll focused text areas, log views, and scroll regions.
+
+TUI tooltips use the same hover-stability heuristics as the native backend. They
+wait two seconds before opening, reset when the pointer moves, and dismiss after
+about one second once the pointer has left the owning widget even if that widget
+still has keyboard focus.
 
 ### GUI Build Fails On Linux
 

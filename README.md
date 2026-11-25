@@ -1005,3 +1005,7 @@ build/data_widgets_test
 node tests/context_menu_web.js # uses the fixture from the test above
 build/ft_combined_smoke --self-test
 ```
+
+## Deep themes
+
+`ft::set_deep_theme("paper-ink")` selects the native C++ Paper Ink appearance and its matching embedded web CSS. `paper-ink-magenta` enables the optional accent. Future themes can register custom native painters and web CSS. See [deep themes](docs/deep-themes.md) and [the interactive demo](examples/ft_paper_ink.cpp). Terminal keeps its regular renderer.
